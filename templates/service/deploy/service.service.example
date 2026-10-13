@@ -1,0 +1,27 @@
+[Unit]
+Description=gsrv service template
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=gsrv-service
+Group=gsrv-service
+WorkingDirectory=/opt/gsrv-service
+ExecStart=/opt/gsrv-service/bin/server -config /etc/gsrv-service/env.yml
+# 本文件由运维放置，权限0600，只含SERVICE_APP_SECRET/SERVICE_APP_TOKEN等必要环境变量。
+EnvironmentFile=/etc/gsrv-service/secrets.env
+RuntimeDirectory=gsrv-service
+RuntimeDirectoryMode=0700
+# 配置中 gateway_socket 应设为 /run/gsrv-service/gateway.sock。
+Restart=on-failure
+RestartSec=3s
+KillSignal=SIGTERM
+# 大于配置的全局shutdown_timeout=20s，给资源与日志收尾留余量。
+TimeoutStopSec=30s
+NoNewPrivileges=true
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
+

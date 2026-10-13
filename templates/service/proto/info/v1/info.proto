@@ -1,0 +1,25 @@
+syntax = "proto3";
+
+package info.v1;
+
+import "google/api/annotations.proto";
+
+option go_package = "example.com/service/pb/info/v1;infov1";
+
+// InfoService 提供模板的实际运行信息，用于验证双协议、身份、日志和生命周期。
+service InfoService {
+  // GetInfo 返回当前配置的服务名称和框架注入的请求标识。
+  rpc GetInfo(GetInfoRequest) returns (GetInfoResponse) {
+    option (google.api.http) = {get: "/v1/service"};
+  }
+}
+
+// GetInfoRequest 不包含认证字段，调用方身份仅从认证后的上下文读取。
+message GetInfoRequest {}
+
+// GetInfoResponse 是实际运行信息，不表示任何中台业务成功。
+message GetInfoResponse {
+  string service_name = 1;
+  string request_id = 2;
+}
+

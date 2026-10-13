@@ -1,0 +1,10 @@
+# 在已安装 Go 1.27、golangci-lint、buf 和本地 protoc 插件的 Shell Runner 上执行。
+# 此任务只验证源码，不安装工具，不连接远端或执行部署。
+stages:
+  - check
+check:
+  stage: check
+  script:
+    - GOWORK=off make check
+    - make build
+    - make -C templates/service build
