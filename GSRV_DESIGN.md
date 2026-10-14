@@ -1,13 +1,13 @@
 # gsrv 公共骨架实施方案
 
-制定：2026-10-13；验收：2026-10-14。构建/运行使用 Go 1.27.2 或更新补丁版；go.mod 的 1.27.0 表示语法最低版本，不代表推荐运行补丁版。依据 [HTTP/2 官方漏洞记录](https://pkg.go.dev/vuln/GO-2026-6617)。模块：`github.com/gtkit/gsrv`。部署背景：Linux 裸机单实例，无 Kubernetes、Docker 或注册中心。用户确认各中台服务使用独立 Go 模块、独立仓库；本轮交付公共骨架与独立模板。OCPC 按最新指令移除，以简单 InfoService 验证。真实 QPS、P99、请求大小与未来副本数尚未给出，下文配置是初始示例，不是容量承诺。
+制定：2026-10-13；验收及复用方式更新：2026-10-14。构建/运行使用 Go 1.27.2 或更新补丁版；go.mod 的 1.27.0 表示语法最低版本，不代表推荐运行补丁版。依据 [HTTP/2 官方漏洞记录](https://pkg.go.dev/vuln/GO-2026-6617)。当前模块：`github.com/gtkit/gsrv`。部署背景：Linux 裸机单实例，无 Kubernetes、Docker 或注册中心。各中台服务通过复制整个项目源码创建独立 Go 模块、独立仓库，公共实现随服务源码维护。OCPC 已按指令移除，以简单 InfoService 验证。真实 QPS、P99、请求大小与未来副本数尚未给出，下文配置是初始示例，不是容量承诺。
 
 ## 1. 架构约束与目录
 
-**沿用参考项目 `ocpc-tool-service` 的目录层级与依赖方向。未经用户明确授权，不移动层级、不另设分层。** 删除 OCPC 不代表允许改变架构；`info` 在其原位置替代业务模块。通用实现位于已有 `internal/pkg` 层，根包只导出独立模块复用入口。
+**沿用参考项目 `ocpc-tool-service` 的目录层级与依赖方向。未经用户明确授权，不移动层级、不另设分层。** 删除 OCPC 不代表允许改变架构；`info` 在其原位置替代业务模块。通用实现位于已有 `internal/pkg` 层，根包提供本仓库的通用能力装配入口。
 
 ```text
-gsrv.go                              公共装配入口，外部服务只 import github.com/gtkit/gsrv
+gsrv.go                              本仓库通用能力的装配入口
 cmd/server/main.go                   flag 与进程入口
 config/env/env.yml.example           外置配置模板
 proto/info/v1/info.proto             唯一契约源
@@ -36,7 +36,6 @@ internal/
     httpserver/、grpcserver/         通用协议 server 封装
     gateway/                        生成 gateway 注册和身份 metadata
     configloader/                   严格单文档 YAML 与凭据环境变量读取
-templates/service/                   独立模块，沿用上述服务分层
 ```
 
 `repository → models`、`module/<m>/worker → application` 等原有层级规则继续有效；InfoService 没有持久化和后台任务，因此不生成空仓储、模型或 worker。未来实际业务需要这些能力时，仍放回原有层级。
@@ -54,10 +53,9 @@ flowchart LR
   Bootstrap --> Entry[gsrv 根包公开入口]
   Config --> Entry
   Entry --> Common[internal/pkg 通用实现]
-  Other[独立服务仓库 bootstrap] --> Entry
 ```
 
-禁止：application 引用 GORM、具体 repository、渠道 SDK 或熔断器；transport 引用 repository/GORM/SDK；repository、internal/pkg 反向依赖业务模块。公共入口和其 internal/pkg 实现不能引用根 InfoService、pb 或独立模板。架构传感器同时检查根服务和模板。
+禁止：application 引用 GORM、具体 repository、渠道 SDK 或熔断器；transport 引用 repository/GORM/SDK；repository、internal/pkg 反向依赖业务模块。根包入口和其 internal/pkg 实现不能引用 InfoService 或 pb。架构传感器检查当前项目；复制后的新服务携带相同检查脚本并保留分层规则。
 
 ## 2. 范围与职责
 
@@ -263,7 +261,7 @@ Start 在启动期须可取消并及时返回，Stop/Check/业务调用都必须
 
 ## 9. 配置与日志核对
 
-根服务与模板的 `config/env/env.yml.example` 使用同一字段定义和注释；实际 YAML 从模板复制，不保留 OCPC 的旧配置。缺失协议块关闭该协议，至少启用一个公开协议；不要用环境名称推断功能开关。
+`config/env/env.yml.example` 是当前项目的配置示例；真实 YAML 从该示例复制，不保留 OCPC 的旧配置。新服务在自己的仓库同步维护配置读取、默认值、约束、示例与说明。缺失协议块关闭该协议，至少启用一个公开协议；不要用环境名称推断功能开关。
 
 | 字段组 | 默认/回落 | 约束与作用 |
 |---|---|---|
@@ -291,7 +289,7 @@ Start 在启动期须可取消并及时返回，Stop/Check/业务调用都必须
 | log.level/json | info/false | level 为 debug/info/warn/error；生产示例 JSON=true |
 | log.path/console | 空/true | 文件路径空关闭文件；不可关闭所有输出 |
 
-AuthConfig的时间窗及breaker参数仍由代码显式装配；nonce容量、gRPC总并发及最小指标已同步到根服务/独立模板配置。
+AuthConfig的时间窗及breaker参数仍由代码显式装配；nonce容量、gRPC总并发及最小指标已同步到当前项目的配置示例。
 
 访问日志固定字段：`request_id`、`service`、`protocol`、`operation`、`duration_ms`、`app_key`、`error_code`、`degraded`，另带 `http_status` 或 `grpc_code`。error_code 统一大写下划线；grpc_code 保留协议原名。尚未认证时 app_key 为空，不信任伪造头。HTTP operation 优先 handler 路由 Pattern，缺失时记录 method+escaped path，不记录 query/body/token/secret/签名；不要在业务 URI path 中放凭据。日志使用 logger/v2 的上下文字段与显式 console 配置；配置非法/目录不可写在启动期报错。panic、配额拒绝、鉴权失败都输出最终访问记录；健康探针和私有 gateway backend 不重复记录。
 
@@ -312,11 +310,43 @@ AuthConfig的时间窗及breaker参数仍由代码显式装配；nonce容量、g
 
 metrics.enabled缺省false；启用时HTTP保留GET /metrics，只允许RemoteAddr的IPv4/IPv6 loopback来源，忽略转发头，远端403。抓取绕过业务签名/nonce/QPS/指标。本机采集器可使用静态127.0.0.1:8080目标和15s周期；本机反向代理须限制管理路径的外部转发。gRPC-only服务如需该示例抓取路由，应同时启用HTTP。
 
-根 InfoService 保留当前项目的完整分层，独立模板采用同样结构；新仓库只引用 gsrv 根包公开入口，不导入其 internal。模板的本地 replace 和 v0.0.0 只用于源码验证；正式使用选择真正发布版本，本轮不发布、不打 tag、不升级 gsrv 为 v2。
+创建新服务时复制整个项目源码，保留 InfoService 的现有分层和所有通用实现；新仓库通过自己的根包装配内部公共能力，不额外依赖外部 gsrv 模块。创建步骤如下：
 
-模板复制与改 module 步骤见 `templates/service/README.md`。更换 module 时只改手写 Go import 和 proto go_package，再 make gen，禁止直接改 pb。新增验证码/推送/文件/身份模块时：proto → application command/result/ports → runtime adapters → transport 映射 → bootstrap 注册；沿用原层级。
+1. 复制源码到新目录并建立独立 Git 仓库，排除 `.git`、`bin`、`run`、`logs`、真实配置、凭据和证书私钥。记录来源骨架的提交，避免复制已有服务的业务数据或运行产物。
+2. 将 `go.mod` 的 module 改为服务实际仓库路径。例如验证码服务演示路径可用 `go mod edit -module=example.com/sms-service`；实际使用须换成自己的路径。
+3. 将 `cmd`、`internal`、`gsrv.go` 中的自模块 imports（包括测试）、proto `go_package`、`scripts/check-architecture.sh` 中的自模块匹配路径同步改为新路径。保留 gtkit 等既有依赖，禁止把所有第三方 import 一起替换。
+4. 执行 `GOWORK=off make gen` 和 `GOWORK=off go mod tidy`，通过契约重新生成 pb，禁止直接改生成产物。
+5. 从 `config/env/env.yml.example` 创建真实配置，调整 `name`、HTTP/gRPC 端口、gateway socket 和凭据环境变量引用。`name` 与调用方 HMAC 目标服务名一致；AppKey 代表调用方。同机服务需要不同监听端口和独立运行目录。
+6. 按 proto → application command/result/ports → runtime adapters → transport 映射 → bootstrap 注册开发验证码/推送/文件/身份模块；业务规则不放进通用封装，目录层级保持不变。
+7. 执行 `GOWORK=off make check`、`make build` 并验证实际接口。公共能力修复不会自动更新已有服务，应逐服务同步源码并验证，不用再次覆盖整个仓库。
 
-Linux/amd64 构建：`make build`。systemd 样例在 `templates/service/deploy/service.service.example`：独立用户、EnvironmentFile、RuntimeDirectory 0700、SIGTERM、30s 停机期限、失败重启、journald 控制台日志。实际配置使用 `/run/gsrv-service/gateway.sock`，远程地址需 TLS。样例需由部署负责人安装，本轮不修改用户级 systemd、不连接生产。
+Linux/amd64 构建：`make build`，输出 `bin/server`。以下 systemd 使用样例保留在本文中，不另建部署目录。以 sms-service 为示例名称，安装时替换用户、目录、配置及单元名称；实际配置设置 `name: sms-service`、`gateway_socket: /run/sms-service/gateway.sock`，远程 HTTP/gRPC 地址需配置 TLS。`shutdown_timeout` 缺省20s，必须小于下方 `TimeoutStopSec=30s`。`secrets.env` 由部署负责人以0600权限配置，包含配置所引用的环境变量；日志启用 console 交由 journald 收集。
+
+```ini
+[Unit]
+Description=sms service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=sms-service
+Group=sms-service
+WorkingDirectory=/opt/sms-service
+ExecStart=/opt/sms-service/bin/server -config /etc/sms-service/env.yml
+EnvironmentFile=/etc/sms-service/secrets.env
+RuntimeDirectory=sms-service
+RuntimeDirectoryMode=0700
+Restart=on-failure
+RestartSec=3s
+KillSignal=SIGTERM
+TimeoutStopSec=30s
+NoNewPrivileges=true
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
+```
 
 容量先以入口有界为目标：单请求 1MiB、同时100请求的原始 body 理论上限约100MiB，解析与桥接还会额外分配，需实测而非把该值当进程内存上限。实际容量估计使用 `并发≈QPS×平均耗时(秒)`；100QPS、平均100ms约10个在途请求。P99、慢依赖、上传场景须压测后决定预算/并发/配额，不把示例100当真实需求。不要同时放宽 body 与并发而忽略内存。
 
@@ -328,27 +358,29 @@ Linux/amd64 构建：`make build`。systemd 样例在 `templates/service/deploy/
 | 公共骨架 | 原 internal/pkg 位置实现 lifecycle/config/health | 监听失败回收、hooks、取消、探针、严格 YAML |
 | 请求治理 | HMAC/nonce/token/limiter/request ID/errors/logs | 篡改/过期/重放、并发nonce、AppKey隔离、拒绝/panic日志 |
 | 稳定性 | gtkit/httpc与gobreaker、显式降级钩子 | closed/open/half-open、失败分类、共享预算、取消无降级 |
-| 服务验证 | 原层级 info 模块与同结构独立模板 | 实际 GetInfo HTTP/gRPC、返回真实服务名/request ID |
+| 服务验证 | 原层级 info 模块 | 实际 GetInfo HTTP/gRPC、返回真实服务名/request ID |
 | gateway | 私有 socket 身份通道、配额一次 | 伪造客户端内部头无效、HTTP/gRPC同配额 |
-| 交付 | 文档/配置/systemd/门禁同步 | make check、独立复制构建、Linux构建、漏洞检查 |
+| 交付 | 文档/配置/systemd说明/门禁同步 | make check、Linux构建；依赖调整时执行漏洞检查 |
 
-`make check` 包含 root 与模板的 build/lint/vet/race/go fix -diff/buf lint，根传感器检查两套层级。真实协议测试只在本机临时端口/socket，凭据为测试生成值；不触达媒体、DB、Redis 或生产。另做独立目录复制编译，证明模板不依赖当前 root 服务 internal；Linux 交叉编译验证目标平台。
+`make check` 包含当前项目的 build/lint/vet/race/go fix -diff/架构传感器/buf lint。CI 执行相同检查和 `make build`，不再构建独立服务起始目录。真实协议测试只在本机临时端口/socket，凭据为测试生成值；不触达媒体、DB、Redis 或生产。Linux 交叉编译验证目标平台；复制的新服务需在自己的仓库执行相同门禁。
 
 OpenSpec 按任务记录执行并严格校验，完成后归档合并 spec。回滚是恢复本次源码、配置与依赖，不涉及持久化迁移。交付结果以实际检查日志为准；不可达的外部漏洞库须明确报告，不能将未完成扫描写为通过。
 
-## 12. 最终验证记录
+## 12. 验证记录
 
-2026-10-14 复审发现工作区已回到前五项实施前，49项文件被仅从Git索引移除但磁盘仍存在且等于HEAD；.gitignore的交付例外也被移除。本轮备份索引后只撤销暂存删除、恢复例外，没有移动、删除或覆盖未授权文件。不能仅凭status判断取消跟踪/回退的操作者；旧前五项归档正文在当前工作区缺失，仅残留元数据，恢复与复审使用新的review-runtime-protection-regressions变更完整记录。
+2026-10-14 此前复审发现工作区已回到前五项实施前，49项文件被仅从Git索引移除但磁盘仍存在且等于HEAD；.gitignore的交付例外也被移除。该次复审备份索引后只撤销暂存删除、恢复例外，没有移动、删除或覆盖未授权文件。不能仅凭status判断取消跟踪/回退的操作者；旧前五项归档正文在当前工作区缺失，仅残留元数据，恢复与复审使用新的review-runtime-protection-regressions变更完整记录。
 
-本轮恢复五项能力并修正边界：typed-nil与未初始化健康/内存nonce存储构造拒绝；重复就绪保留快照；旧生命周期探测不覆盖新周期；探测panic未就绪；等待Refresh可取消；Health跳过业务参数校验；认证/参数失败、错误、panic及真实stream取消均释放并发槽位。
+该次复审恢复五项能力并修正边界：typed-nil与未初始化健康/内存nonce存储构造拒绝；重复就绪保留快照；旧生命周期探测不覆盖新周期；探测panic未就绪；等待Refresh可取消；Health跳过业务参数校验；认证/参数失败、错误、panic及真实stream取消均释放并发槽位。
 
-根服务和模板完整make check通过（lint=0 issues、vet/race/现代语法/架构/buf lint）；原目录及依赖锁定版本、proto/pb不变；Linux/amd64与独立复制构建通过。真实CLI仅用本机临时配置/假凭据验证HTTP A=200/429、B=200、探针200、gateway指标只计一次、gRPC GetInfo成功及SIGTERM exit=0。两套govulncheck为0项可达漏洞，既有CEL导入包提示如下。最终Git无暂存删除/文件移动，源码修改与新增文件保留为未提交状态。
+此前复审中，根服务完整make check通过（lint=0 issues、vet/race/现代语法/架构/buf lint），原目录及依赖锁定版本、proto/pb不变，Linux/amd64构建通过。真实CLI仅用本机临时配置/假凭据验证HTTP A=200/429、B=200、探针200、gateway指标只计一次、gRPC GetInfo成功及SIGTERM exit=0。根服务govulncheck为0项可达漏洞，既有CEL导入包提示如下。以下属于历史验证，不表示本轮重新执行了漏洞扫描或CLI验证：
 
-- 根服务与独立模板的 `make check`：build、golangci-lint（0 issues）、vet、race、go fix -diff、架构传感器与 buf lint。
-- 根服务/模板 Linux amd64 交叉构建；模板复制到独立临时目录，replace 指向公开模块后编译。
+- 根服务的 `make check`：build、golangci-lint（0 issues）、vet、race、go fix -diff、架构传感器与 buf lint。
+- 根服务 Linux amd64 交叉构建。
 - proto 再生成结果与入库产物逐文件 SHA256 一致，未手改 pb。
 - 真实 main 进程 `/readyz=200`，发送 SIGTERM 后退出码 0；默认 path 留空的控制台日志已加入回归测试。
-- 根服务与模板 `govulncheck`：0 项可达漏洞；另有 1 项导入包提示：cel-go v0.28.0 的 NativeTypes/ParseStructTag（当前调用图未使用），保留现有 protovalidate 依赖约束，未宣称全部依赖无漏洞。未来采用这两个 API 时需先升级至修复版本 v0.30.0 或更高，依据 [GO-2026-6094](https://pkg.go.dev/vuln/GO-2026-6094)。
-- 目录核对：根项目和模板沿用原服务分层；通用实现集中 internal/pkg；手写测试与对应实现同目录；全部 Go 文件 gofmt -l 无输出。
+- 根服务 `govulncheck`：0 项可达漏洞；另有 1 项导入包提示：cel-go v0.28.0 的 NativeTypes/ParseStructTag（当前调用图未使用），保留现有 protovalidate 依赖约束，未宣称全部依赖无漏洞。未来采用这两个 API 时需先升级至修复版本 v0.30.0 或更高，依据 [GO-2026-6094](https://pkg.go.dev/vuln/GO-2026-6094)。
+- 目录核对：根项目沿用原服务分层；通用实现集中 internal/pkg；手写测试与对应实现同目录；全部 Go 文件 gofmt -l 无输出。
+
+2026-10-14 整仓复制方式清理：已移除重复的独立服务起始目录及检查/构建调用，根文档同步整仓复制流程，systemd样例保留在本文。其余目录层级、Go源码、配置示例、锁定依赖及根proto/pb保持不变。实际运行 `GOWORK=off make check` 全部通过：build、golangci-lint（0 issues）、vet、race（count=1、timeout=5m）、go fix -diff无输出、架构传感器与buf lint；`make build` 生成Linux amd64静态二进制。另通过bash语法检查、有效模板引用/文档链接核对和git diff --check。受保护根文件哈希、目录集合、既有暂存diff均与操作前一致，本次29个已跟踪删除均属于授权目录。OpenSpec继续本地不跟踪，变更严格校验通过；本轮无依赖变更，未重新执行漏洞扫描。
 
 本轮不进行 Git 提交、push、tag、Release、容器或生产部署。

@@ -17,3 +17,5 @@ go.work.sum
 .proto-deps/
 # 本地 harness/agent 元数据沿用原忽略范围。
 *.md
+# OpenSpec 仅保留在本地，不纳入 Git。
+/openspec/

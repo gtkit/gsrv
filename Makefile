@@ -1,4 +1,4 @@
-.PHONY: gen proto-check build run test check check-local template-check
+.PHONY: gen proto-check build run test check check-local
 
 gen:
 	buf lint
@@ -11,7 +11,7 @@ run:
 	go run ./cmd/server -config config/env/env.yml
 test:
 	go test ./...
-check: check-local template-check
+check: check-local
 check-local:
 	go build ./...
 	golangci-lint run ./...
@@ -20,5 +20,3 @@ check-local:
 	bash scripts/check-modern.sh
 	bash scripts/check-architecture.sh
 	buf lint
-template-check:
-	$(MAKE) -C templates/service check

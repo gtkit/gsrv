@@ -1,9 +1,0 @@
-config/env/*.yml
-!config/env/*.yml.example
-bin/
-run/
-logs/
-.env
-*.key
-*.pem
-

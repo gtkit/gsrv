@@ -7,4 +7,3 @@ check:
   script:
     - GOWORK=off make check
     - make build
-    - make -C templates/service build
