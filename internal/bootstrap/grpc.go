@@ -3,12 +3,13 @@ package bootstrap
 import (
 	"buf.build/go/protovalidate"
 	"github.com/gtkit/gsrv"
+	"google.golang.org/grpc"
+	"google.golang.org/protobuf/proto"
+
 	infogrpc "github.com/gtkit/gsrv/internal/module/info/transport/grpc"
 	"github.com/gtkit/gsrv/internal/platform/config"
 	infort "github.com/gtkit/gsrv/internal/runtime/module/info"
 	pb "github.com/gtkit/gsrv/pb/info/v1"
-	"google.golang.org/grpc"
-	"google.golang.org/protobuf/proto"
 )
 
 // buildGRPCServers 沿用 bootstrap→runtime/module→application 的装配方向。

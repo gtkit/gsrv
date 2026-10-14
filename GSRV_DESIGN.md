@@ -1,6 +1,6 @@
 # gsrv 公共骨架实施方案
 
-日期：2026-10-13。模块：`github.com/gtkit/gsrv`。部署背景：Linux 裸机单实例，无 Kubernetes、Docker 或注册中心。用户确认各中台服务使用独立 Go 模块、独立仓库；本轮交付公共骨架与独立模板。OCPC 按最新指令移除，以简单 InfoService 验证。真实 QPS、P99、请求大小与未来副本数尚未给出，下文配置是初始示例，不是容量承诺。
+制定：2026-10-13；验收：2026-10-14。构建/运行使用 Go 1.27.2 或更新补丁版；go.mod 的 1.27.0 表示语法最低版本，不代表推荐运行补丁版。依据 [HTTP/2 官方漏洞记录](https://pkg.go.dev/vuln/GO-2026-6617)。模块：`github.com/gtkit/gsrv`。部署背景：Linux 裸机单实例，无 Kubernetes、Docker 或注册中心。用户确认各中台服务使用独立 Go 模块、独立仓库；本轮交付公共骨架与独立模板。OCPC 按最新指令移除，以简单 InfoService 验证。真实 QPS、P99、请求大小与未来副本数尚未给出，下文配置是初始示例，不是容量承诺。
 
 ## 1. 架构约束与目录
 
@@ -314,3 +314,14 @@ Linux/amd64 构建：`make build`。systemd 样例在 `templates/service/deploy/
 `make check` 包含 root 与模板的 build/lint/vet/race/go fix -diff/buf lint，根传感器检查两套层级。真实协议测试只在本机临时端口/socket，凭据为测试生成值；不触达媒体、DB、Redis 或生产。另做独立目录复制编译，证明模板不依赖当前 root 服务 internal；Linux 交叉编译验证目标平台。
 
 OpenSpec 按任务记录执行并严格校验，完成后归档合并 spec。回滚是恢复本次源码、配置与依赖，不涉及持久化迁移。交付结果以实际检查日志为准；不可达的外部漏洞库须明确报告，不能将未完成扫描写为通过。
+
+## 12. 最终验证记录
+
+- 根服务与独立模板的 `make check`：build、golangci-lint（0 issues）、vet、race、go fix -diff、架构传感器与 buf lint。
+- 根服务/模板 Linux amd64 交叉构建；模板复制到独立临时目录，replace 指向公开模块后编译。
+- proto 再生成结果与入库产物逐文件 SHA256 一致，未手改 pb。
+- 真实 main 进程 `/readyz=200`，发送 SIGTERM 后退出码 0；默认 path 留空的控制台日志已加入回归测试。
+- 根服务与模板 `govulncheck`：0 项可达漏洞；另有 1 项导入包提示：cel-go v0.28.0 的 NativeTypes/ParseStructTag（当前调用图未使用），保留现有 protovalidate 依赖约束，未宣称全部依赖无漏洞。未来采用这两个 API 时需先升级至修复版本 v0.30.0 或更高，依据 [GO-2026-6094](https://pkg.go.dev/vuln/GO-2026-6094)。
+- 目录核对：根项目和模板沿用原服务分层；通用实现集中 internal/pkg；手写测试与对应实现同目录；全部 Go 文件 gofmt -l 无输出。
+
+本轮不进行 Git 提交、push、tag、Release、容器或生产部署。

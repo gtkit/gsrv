@@ -1,9 +1,10 @@
 package interceptor
 
 import (
-	"github.com/gtkit/gsrv/internal/pkg/fault"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+
+	"github.com/gtkit/gsrv/internal/pkg/fault"
 )
 
 // ToStatus 保留已映射的 gRPC status，统一取消、治理错误及未知错误的安全响应。

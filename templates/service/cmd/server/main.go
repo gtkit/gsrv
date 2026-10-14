@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
-	"example.com/service/internal/bootstrap"
 	"flag"
+
 	"github.com/gtkit/logger/v2"
+
+	"example.com/service/internal/bootstrap"
 )
 
 func main() {

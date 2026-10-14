@@ -4,8 +4,10 @@ package bootstrap
 import (
 	"context"
 	"fmt"
-	"github.com/gtkit/gsrv/internal/platform/config"
+
 	"github.com/gtkit/logger/v2"
+
+	"github.com/gtkit/gsrv/internal/platform/config"
 )
 
 // Run 按配置→日志→服务装配→运行顺序执行，错误路径同样释放自持资源。

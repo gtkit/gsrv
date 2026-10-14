@@ -1,10 +1,11 @@
 package configloader_test
 
 import (
-	config "github.com/gtkit/gsrv/internal/pkg/configloader"
 	"os"
 	"path/filepath"
 	"testing"
+
+	config "github.com/gtkit/gsrv/internal/pkg/configloader"
 )
 
 func TestStrictLoad(t *testing.T) {

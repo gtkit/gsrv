@@ -1,5 +1,8 @@
-## ADDED Requirements
+# gsrv-service-template Specification
 
+## Purpose
+TBD - created by archiving change extract-gsrv-core-and-service-template. Update Purpose after archive.
+## Requirements
 ### Requirement: Independent service template
 A template SHALL compile as an independent Go module using only public gsrv packages, include Linux deployment examples and configuration documentation, and support HTTP/gRPC registration without mandatory Redis or database.
 #### Scenario: Fresh template build
@@ -17,4 +20,10 @@ The repository SHALL contain a root document covering architecture, request sequ
 #### Scenario: Developer starts another service
 - **WHEN** a developer reads GSRV_DESIGN.md
 - **THEN** public responsibilities, service ownership and template startup instructions are identifiable
+
+### Requirement: Preserve original directory layering
+Services SHALL retain cmd/server, internal/bootstrap, internal/platform/config, internal/runtime/module and internal/module application/transport layers. Generic implementations SHALL reside in internal/pkg, with interceptor and requestid remaining there. Tests SHALL be colocated with the implementation they exercise.
+#### Scenario: Replace the validation module
+- **WHEN** OCPC is replaced by InfoService
+- **THEN** InfoService remains in the original module/runtime/transport layers and no new top-level capability directories replace internal/pkg
 

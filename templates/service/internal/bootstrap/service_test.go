@@ -11,13 +11,14 @@ import (
 	"testing"
 	"time"
 
-	"example.com/service/internal/platform/config"
-	pb "example.com/service/pb/info/v1"
 	"github.com/gtkit/gsrv"
 	json "github.com/gtkit/json/v2"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
+
+	"example.com/service/internal/platform/config"
+	pb "example.com/service/pb/info/v1"
 )
 
 func TestInfoServiceProductionAssembly(t *testing.T) {

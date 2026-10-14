@@ -9,9 +9,10 @@ import (
 	"strings"
 	"time"
 
-	request "github.com/gtkit/gsrv/internal/pkg/requestid"
 	"github.com/gtkit/logger/v2"
 	"go.uber.org/zap"
+
+	request "github.com/gtkit/gsrv/internal/pkg/requestid"
 )
 
 // Config 定义日志输出；Path 空则仅控制台，Console 未设置回落 true。

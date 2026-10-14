@@ -9,16 +9,17 @@ import (
 	"path/filepath"
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
-	"github.com/gtkit/gsrv/internal/pkg/auth"
-	"github.com/gtkit/gsrv/internal/pkg/fault"
-	grpctransport "github.com/gtkit/gsrv/internal/pkg/grpcserver"
-	httptransport "github.com/gtkit/gsrv/internal/pkg/httpserver"
-	request "github.com/gtkit/gsrv/internal/pkg/requestid"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+
+	"github.com/gtkit/gsrv/internal/pkg/auth"
+	"github.com/gtkit/gsrv/internal/pkg/fault"
+	grpctransport "github.com/gtkit/gsrv/internal/pkg/grpcserver"
+	httptransport "github.com/gtkit/gsrv/internal/pkg/httpserver"
+	request "github.com/gtkit/gsrv/internal/pkg/requestid"
 )
 
 // Register 是 proto 生成的 Register<Service>Handler 的函数签名。

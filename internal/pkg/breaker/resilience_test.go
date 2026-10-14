@@ -7,10 +7,11 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/sony/gobreaker/v2"
+
 	resilience "github.com/gtkit/gsrv/internal/pkg/breaker"
 	"github.com/gtkit/gsrv/internal/pkg/fault"
 	request "github.com/gtkit/gsrv/internal/pkg/requestid"
-	"github.com/sony/gobreaker/v2"
 )
 
 func TestBreakerOpensAndRecovers(t *testing.T) {

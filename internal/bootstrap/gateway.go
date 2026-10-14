@@ -2,12 +2,14 @@ package bootstrap
 
 import (
 	"errors"
-	"github.com/gtkit/gsrv"
-	"github.com/gtkit/gsrv/internal/platform/config"
-	pb "github.com/gtkit/gsrv/pb/info/v1"
 	"net/http"
 	"os"
 	"path/filepath"
+
+	"github.com/gtkit/gsrv"
+
+	"github.com/gtkit/gsrv/internal/platform/config"
+	pb "github.com/gtkit/gsrv/pb/info/v1"
 )
 
 // buildHTTPServer 沿用网关装配位置；共享已认证 AppKey、配额及健康状态。

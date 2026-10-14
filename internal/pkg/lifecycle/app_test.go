@@ -1,4 +1,4 @@
-package gsrv_test
+package lifecycle_test
 
 import (
 	"context"
@@ -7,8 +7,8 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/gtkit/gsrv"
 	"github.com/gtkit/gsrv/internal/pkg/health"
+	"github.com/gtkit/gsrv/internal/pkg/lifecycle"
 )
 
 type fakeServer struct {
@@ -35,7 +35,7 @@ func TestStartupFailureClosesListeners(t *testing.T) {
 	first := &fakeServer{done: make(chan struct{}), state: state, t: t}
 	failure := errors.New("port conflict")
 	second := &fakeServer{failure: failure, done: make(chan struct{}), state: state, t: t}
-	app, err := gsrv.New("test", gsrv.WithServers(first, second), gsrv.WithHealth(state))
+	app, err := lifecycle.New("test", lifecycle.WithServers(first, second), lifecycle.WithHealth(state))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,8 +51,8 @@ func TestCancellationAndHookRollback(t *testing.T) {
 	server := &fakeServer{done: make(chan struct{}), state: state, t: t}
 	ctx, cancel := context.WithCancel(t.Context())
 	var start, stop atomic.Int32
-	app, err := gsrv.New("test", gsrv.WithServers(server), gsrv.WithHealth(state),
-		gsrv.WithHook(gsrv.Hook{Name: "worker", Start: func(context.Context) error { start.Add(1); cancel(); return nil },
+	app, err := lifecycle.New("test", lifecycle.WithServers(server), lifecycle.WithHealth(state),
+		lifecycle.WithHook(lifecycle.Hook{Name: "worker", Start: func(context.Context) error { start.Add(1); cancel(); return nil },
 			Stop: func(context.Context) error { stop.Add(1); return nil }}))
 	if err != nil {
 		t.Fatal(err)
@@ -66,8 +66,8 @@ func TestCancellationAndHookRollback(t *testing.T) {
 	if err := app.Run(t.Context()); err == nil {
 		t.Fatal("second run accepted")
 	}
-	broken, err := gsrv.New("test", gsrv.WithServers(&fakeServer{done: make(chan struct{}), state: state, t: t}), gsrv.WithHealth(state),
-		gsrv.WithHook(gsrv.Hook{Name: "partial", Start: func(context.Context) error { return errors.New("failed") }, Stop: func(context.Context) error { stop.Add(1); return nil }}))
+	broken, err := lifecycle.New("test", lifecycle.WithServers(&fakeServer{done: make(chan struct{}), state: state, t: t}), lifecycle.WithHealth(state),
+		lifecycle.WithHook(lifecycle.Hook{Name: "partial", Start: func(context.Context) error { return errors.New("failed") }, Stop: func(context.Context) error { stop.Add(1); return nil }}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,8 +79,8 @@ func TestServeFailureStopsWholeApp(t *testing.T) {
 	state := health.New()
 	first := &fakeServer{done: make(chan struct{}), state: state, t: t}
 	second := &fakeServer{done: make(chan struct{}), state: state, t: t}
-	app, err := gsrv.New("test", gsrv.WithServers(first, second), gsrv.WithHealth(state),
-		gsrv.WithHook(gsrv.Hook{Name: "exit", Start: func(context.Context) error { first.once.Do(func() { close(first.done) }); return nil }, Stop: func(context.Context) error { return nil }}))
+	app, err := lifecycle.New("test", lifecycle.WithServers(first, second), lifecycle.WithHealth(state),
+		lifecycle.WithHook(lifecycle.Hook{Name: "exit", Start: func(context.Context) error { first.once.Do(func() { close(first.done) }); return nil }, Stop: func(context.Context) error { return nil }}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,7 +93,7 @@ func TestServeFailureStopsWholeApp(t *testing.T) {
 }
 func ExampleNew() {
 	server := &exampleServer{}
-	app, err := gsrv.New("demo", gsrv.WithServers(server))
+	app, err := lifecycle.New("demo", lifecycle.WithServers(server))
 	if err != nil {
 		panic(err)
 	}

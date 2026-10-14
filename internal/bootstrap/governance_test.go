@@ -14,7 +14,6 @@ import (
 
 	"buf.build/go/protovalidate"
 	"github.com/gtkit/gsrv"
-	pb "github.com/gtkit/gsrv/pb/info/v1"
 	json "github.com/gtkit/json/v2"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -23,6 +22,8 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
+
+	pb "github.com/gtkit/gsrv/pb/info/v1"
 )
 
 type quotaProbe struct {

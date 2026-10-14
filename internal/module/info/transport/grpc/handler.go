@@ -2,7 +2,9 @@ package grpc
 
 import (
 	"context"
+
 	"github.com/gtkit/gsrv"
+
 	"github.com/gtkit/gsrv/internal/module/info/application"
 	pb "github.com/gtkit/gsrv/pb/info/v1"
 )

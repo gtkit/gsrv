@@ -3,11 +3,10 @@ package interceptor
 
 import (
 	"context"
-	"github.com/gtkit/gsrv/internal/pkg/auth"
-	"github.com/gtkit/gsrv/internal/pkg/fault"
-	"github.com/gtkit/gsrv/internal/pkg/limiter"
-	"github.com/gtkit/gsrv/internal/pkg/logging"
-	request "github.com/gtkit/gsrv/internal/pkg/requestid"
+	"runtime/debug"
+	"strings"
+	"time"
+
 	"github.com/gtkit/logger/v2"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
@@ -15,9 +14,12 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
-	"runtime/debug"
-	"strings"
-	"time"
+
+	"github.com/gtkit/gsrv/internal/pkg/auth"
+	"github.com/gtkit/gsrv/internal/pkg/fault"
+	"github.com/gtkit/gsrv/internal/pkg/limiter"
+	"github.com/gtkit/gsrv/internal/pkg/logging"
+	request "github.com/gtkit/gsrv/internal/pkg/requestid"
 )
 
 // 私有 gateway 身份仅允许通过权限受限 Unix socket 传入。

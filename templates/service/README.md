@@ -13,6 +13,8 @@ proto/info/v1 → pb/info/v1      buf 契约与生成产物
 
 ## 在本仓库验证
 
+构建/运行使用 Go 1.27.2 或更新的 1.27 补丁版；1.27.2 是本轮实际验证版本。
+
 `go.mod` 使用临时 `v0.0.0` 与 `replace github.com/gtkit/gsrv => ../..`，仅用于当前尚未发布的源码联调，不代表已发布版本。
 
 1. 复制 `config/env/env.yml.example` 为 `config/env/env.yml`。

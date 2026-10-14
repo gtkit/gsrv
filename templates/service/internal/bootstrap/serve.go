@@ -4,8 +4,10 @@ import (
 	"context"
 	"crypto/rand"
 	"errors"
-	"example.com/service/internal/platform/config"
+
 	"github.com/gtkit/gsrv"
+
+	"example.com/service/internal/platform/config"
 )
 
 // servers 持有本服务装配结果；生命周期实现位于 internal/pkg/lifecycle。

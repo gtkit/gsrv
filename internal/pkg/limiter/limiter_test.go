@@ -2,8 +2,9 @@ package limiter_test
 
 import (
 	"crypto/rand"
-	"github.com/gtkit/gsrv/internal/pkg/limiter"
 	"testing"
+
+	"github.com/gtkit/gsrv/internal/pkg/limiter"
 )
 
 func TestIsolationAndExplicitDisable(t *testing.T) {

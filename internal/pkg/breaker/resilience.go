@@ -7,24 +7,25 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/gtkit/gsrv/internal/pkg/fault"
-	request "github.com/gtkit/gsrv/internal/pkg/requestid"
 	"github.com/gtkit/httpc"
 	"github.com/gtkit/logger/v2"
 	"github.com/sony/gobreaker/v2"
+
+	"github.com/gtkit/gsrv/internal/pkg/fault"
+	request "github.com/gtkit/gsrv/internal/pkg/requestid"
 )
 
 // Config 设置单个下游熔断策略；不得跨不相关依赖共用实例。
 type Config struct {
-	_                struct{} // 强制外部使用带键字面量。
-	Name             string
-	Interval         time.Duration
-	OpenTimeout      time.Duration
-	MinRequests      uint32
-	FailureRatio     float64
-	HalfOpenRequests uint32
-	IsSuccessful     func(error) bool
-	IsExcluded       func(error) bool
+	_                struct{}         // 强制外部使用带键字面量。
+	Name             string           // 依赖名称；必填，一个实例保护一个下游依赖，不跨无关依赖共用。
+	Interval         time.Duration    // 关闭状态的计数窗口；0=30s，必须为正。
+	OpenTimeout      time.Duration    // 熔断开启后转半开的等待时间；0=10s，必须为正。
+	MinRequests      uint32           // 至少完成的有效样本数；0=20，不含排除请求与在途请求。
+	FailureRatio     float64          // 开启熔断的失败比例阈值；0=0.5，必须在 (0,1]。
+	HalfOpenRequests uint32           // 半开状态的并行探测请求上限；0=1。
+	IsSuccessful     func(error) bool // 下游成功分类；nil 使用 gobreaker 默认 err==nil，由业务解释领域错误。
+	IsExcluded       func(error) bool // 额外排除样本分类；nil 无额外排除，取消/鉴权/参数错误始终排除。
 }
 
 // Breaker 包装一个指定下游的熔断状态。

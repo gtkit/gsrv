@@ -1,5 +1,5 @@
-// Package http 以 net/http 提供服务监听和请求治理。
-package http
+// Package httpserver 以 net/http 提供服务监听和请求治理。
+package httpserver
 
 import (
 	"context"
@@ -12,15 +12,16 @@ import (
 	"sync"
 	"time"
 
+	json "github.com/gtkit/json/v2"
+	"github.com/gtkit/logger/v2"
+	"go.uber.org/zap"
+
 	"github.com/gtkit/gsrv/internal/pkg/auth"
 	"github.com/gtkit/gsrv/internal/pkg/fault"
 	"github.com/gtkit/gsrv/internal/pkg/health"
 	"github.com/gtkit/gsrv/internal/pkg/limiter"
 	"github.com/gtkit/gsrv/internal/pkg/logging"
 	request "github.com/gtkit/gsrv/internal/pkg/requestid"
-	json "github.com/gtkit/json/v2"
-	"github.com/gtkit/logger/v2"
-	"go.uber.org/zap"
 )
 
 // Authenticator 在 HTTP body 解码前返回调用方身份。

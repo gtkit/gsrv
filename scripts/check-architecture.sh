@@ -14,7 +14,7 @@ check() {
     fail=1
   fi
 }
-check '公开骨架禁止依赖 internal、模板或业务 SDK' \
+check '公开入口及通用封装禁止依赖业务层、模板或 SDK' \
   'github.com/gtkit/gsrv/(internal/(bootstrap|platform|module|runtime|repository)|pb)/|example.com/service|gtkit/(ocpcx|asynqx|redisx)' \
   gsrv.go internal/pkg
 for service in . templates/service; do
@@ -26,8 +26,16 @@ for service in . templates/service; do
       check 'repository/pkg 禁止反向依赖 module' 'internal/module/' "$service/internal/$directory"
     fi
   done
-  check '业务层禁止引用 pb 和协议包' '/pb/|google.golang.org/grpc|net/http' \
-    "$service/internal/module/info/application"
+  for worker in "$service"/internal/module/*/worker; do
+    if [ -d "$worker" ]; then
+      check 'worker 只能通过 application 访问业务' 'internal/repository/|internal/module/[^/]+/transport/|gorm\.io/|net/http' "$worker"
+    fi
+  done
+  for application in "$service"/internal/module/*/application; do
+    if [ -d "$application" ]; then
+      check '业务层禁止引用 pb、协议及装配层' '/pb/|google.golang.org/grpc|net/http|internal/(bootstrap|runtime)/' "$application"
+    fi
+  done
 done
 if [ "$fail" -eq 0 ]; then
   echo '✓ 架构传感器通过（根服务和模板沿用原分层）'

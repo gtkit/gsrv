@@ -3,9 +3,11 @@ package bootstrap
 
 import (
 	"context"
-	"example.com/service/internal/platform/config"
 	"fmt"
+
 	"github.com/gtkit/logger/v2"
+
+	"example.com/service/internal/platform/config"
 )
 
 // Run 按配置→日志→服务装配→运行顺序执行，错误路径同样释放自持资源。

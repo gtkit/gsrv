@@ -20,7 +20,7 @@ OCPC 及其媒体 SDK、Redis、任务队列、业务配置和测试已按要求
 
 ## 本地启动
 
-1. 已安装 Go 1.27；生成契约还需要 buf 与 `buf.gen.yaml` 中的本地插件。
+1. 已安装 Go 1.27.2 或更新的 1.27 补丁版（已验证 1.27.2，包含 HTTP/2 安全修复）；生成契约还需要 buf 与 `buf.gen.yaml` 中的本地插件。
 2. 将 `config/env/env.yml.example` 复制为 `config/env/env.yml`。逐项注释包含用途、默认值和约束。
 3. 在进程环境中设置 `SERVICE_APP_SECRET` 和 `SERVICE_APP_TOKEN`，各至少 32 字节。配置只引用变量名称。
 4. `GOWORK=off make run`。默认监听 HTTP `127.0.0.1:8080`、gRPC `127.0.0.1:9090`。

@@ -1,4 +1,4 @@
-package http
+package httpserver
 
 import (
 	"context"
@@ -13,10 +13,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gtkit/logger/v2"
+
 	"github.com/gtkit/gsrv/internal/pkg/auth"
 	"github.com/gtkit/gsrv/internal/pkg/health"
 	"github.com/gtkit/gsrv/internal/pkg/logging"
-	"github.com/gtkit/logger/v2"
 )
 
 type quotaFunc func(context.Context, string) (bool, error)

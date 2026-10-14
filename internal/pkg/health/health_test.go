@@ -3,11 +3,13 @@ package health_test
 import (
 	"context"
 	"errors"
-	"github.com/gtkit/gsrv/internal/pkg/health"
-	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 	"net/http/httptest"
 	"sync"
 	"testing"
+
+	healthpb "google.golang.org/grpc/health/grpc_health_v1"
+
+	"github.com/gtkit/gsrv/internal/pkg/health"
 )
 
 func TestReadinessAndLiveness(t *testing.T) {

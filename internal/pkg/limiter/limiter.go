@@ -6,6 +6,7 @@ import (
 	"errors"
 
 	"github.com/gtkit/golimit"
+
 	"github.com/gtkit/gsrv/internal/pkg/auth"
 )
 

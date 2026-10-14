@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	"flag"
-	"github.com/gtkit/gsrv/internal/bootstrap"
+
 	"github.com/gtkit/logger/v2"
+
+	"github.com/gtkit/gsrv/internal/bootstrap"
 )
 
 func main() {

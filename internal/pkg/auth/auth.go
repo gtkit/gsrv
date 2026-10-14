@@ -16,6 +16,7 @@ import (
 	"time"
 
 	encryhmac "github.com/gtkit/encry/hmac"
+
 	"github.com/gtkit/gsrv/internal/pkg/fault"
 )
 
@@ -32,10 +33,10 @@ const (
 // Credential 描述一个调用方的可轮换凭据；Secret/Token 至少有一项，非空时至少 32 字节。
 type Credential struct {
 	_      struct{} // 强制外部使用带键字面量。
-	AppKey string
-	KeyID  string
-	Secret string
-	Token  string
+	AppKey string   // 调用服务公开标识；必填，1–64 位安全 ASCII 字符。
+	KeyID  string   // 密钥轮换版本；必填，同 AppKey 内唯一，字符约束同 AppKey。
+	Secret string   // HTTP HMAC 密钥；非空至少 32 字节，与 Token 至少提供一项。
+	Token  string   // 公开 gRPC Bearer 凭据；非空至少 32 字节，绑定 AppKey。
 }
 
 // Identity 是认证结果，AppKey 不从未经验证的头直接构造。
@@ -47,13 +48,13 @@ type Identity struct {
 
 // Config 配置签名校验；默认 Skew=30s、MaxBodyBytes=1MiB、NonceCapacity=100000。
 type Config struct {
-	_             struct{} // 强制外部使用带键字面量。
-	Service       string
-	Credentials   []Credential
-	Skew          time.Duration
-	MaxBodyBytes  int64
-	NonceCapacity int
-	Nonces        NonceStore
+	_             struct{}      // 强制外部使用带键字面量。
+	Service       string        // HMAC 目标服务名；必填，约束同 AppKey，客户端必须签同一名称。
+	Credentials   []Credential  // 调用方可轮换凭据；必填，同 AppKey/KeyID 不得重复，不能空列表关闭鉴权。
+	Skew          time.Duration // HTTP 时间戳前后容差；0=30s，必须为正且不超过 5m。
+	MaxBodyBytes  int64         // HTTP 原始签名 body 上限；0=1MiB，必须为正，与 HTTP server 限额一致。
+	NonceCapacity int           // 内存防重放容量；0=100000，使用默认存储时必须为正，不驱逐仍有效 nonce。
+	Nonces        NonceStore    // 原子消费 nonce 的存储；nil 回落有界本进程内存实现，不跨重启/副本共享。
 }
 
 // Verifier 持有构造时复制的凭据，可供两种协议同时认证。

@@ -2,9 +2,11 @@ package grpc
 
 import (
 	"context"
+
+	"github.com/gtkit/gsrv"
+
 	"example.com/service/internal/module/info/application"
 	pb "example.com/service/pb/info/v1"
-	"github.com/gtkit/gsrv"
 )
 
 // Handler 只执行 proto/application 映射；认证与校验由框架拦截器执行。

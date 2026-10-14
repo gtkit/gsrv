@@ -4,7 +4,9 @@ import (
 	"context"
 	"crypto/rand"
 	"errors"
+
 	"github.com/gtkit/gsrv"
+
 	"github.com/gtkit/gsrv/internal/platform/config"
 )
 

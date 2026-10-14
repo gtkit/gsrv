@@ -1,5 +1,5 @@
-// Package grpc 提供 gRPC server、认证和请求治理适配。
-package grpc
+// Package grpcserver 提供 gRPC server、认证和请求治理适配。
+package grpcserver
 
 import (
 	"context"
@@ -11,15 +11,16 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gtkit/gsrv/internal/pkg/auth"
-	"github.com/gtkit/gsrv/internal/pkg/health"
-	"github.com/gtkit/gsrv/internal/pkg/interceptor"
-	"github.com/gtkit/gsrv/internal/pkg/limiter"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/reflection"
 	"google.golang.org/protobuf/proto"
+
+	"github.com/gtkit/gsrv/internal/pkg/auth"
+	"github.com/gtkit/gsrv/internal/pkg/health"
+	"github.com/gtkit/gsrv/internal/pkg/interceptor"
+	"github.com/gtkit/gsrv/internal/pkg/limiter"
 )
 
 // 私有 gateway metadata 名称与 interceptor 保持一致。
