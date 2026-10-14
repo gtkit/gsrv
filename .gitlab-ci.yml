@@ -1,4 +1,5 @@
 # 在已安装 Go 1.27、golangci-lint、buf 和本地 protoc 插件的 Shell Runner 上执行。
+# make check 包含契约临时再生成比较及整仓复制校验。
 # 此任务只验证源码，不安装工具，不连接远端或执行部署。
 stages:
   - check

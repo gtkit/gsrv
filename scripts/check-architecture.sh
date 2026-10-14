@@ -3,6 +3,12 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 fail=0
+module=$(awk '$1 == "module" { gsub(/"/, "", $2); print $2; exit }' go.mod)
+if [ -z "$module" ]; then
+  echo 'go.mod 缺少 module，无法校验架构。' >&2
+  exit 1
+fi
+module_pattern=$(printf '%s' "$module" | sed 's/[][\\.^$*+?(){}|]/\\&/g')
 check() {
   local desc="$1" pattern="$2"
   shift 2
@@ -15,7 +21,7 @@ check() {
   fi
 }
 check '公开入口及通用封装禁止依赖业务层或 SDK' \
-  'github.com/gtkit/gsrv/(internal/(bootstrap|platform|module|runtime|repository)|pb)/|gtkit/(ocpcx|asynqx|redisx)' \
+  "$module_pattern/(internal/(bootstrap|platform|module|runtime|repository)|pb)/|gtkit/(ocpcx|asynqx|redisx)" \
   gsrv.go internal/pkg
 check 'module 禁止直接引用基础设施、repository、SDK 和熔断器' \
   'gorm\.io/|gtkit/(redisx|httpc|asynqx|ocpcx)|redis/go-redis|hibiken/asynq|internal/repository/|sony/gobreaker' \

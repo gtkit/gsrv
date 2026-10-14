@@ -1,10 +1,12 @@
-.PHONY: gen proto-check build run test check check-local
+.PHONY: gen proto-check copy-check build run test check check-local
 
 gen:
 	buf lint
 	buf generate
 proto-check:
-	buf lint
+	bash scripts/check-proto.sh
+copy-check:
+	bash scripts/check-copy.sh
 build:
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o bin/server ./cmd/server
 run:
@@ -19,4 +21,4 @@ check-local:
 	go test -race -count=1 -timeout=5m ./...
 	bash scripts/check-modern.sh
 	bash scripts/check-architecture.sh
-	buf lint
+	$(MAKE) proto-check copy-check

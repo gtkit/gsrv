@@ -4,7 +4,9 @@ package config
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"path/filepath"
+	"slices"
 	"time"
 
 	"github.com/gtkit/gsrv"
@@ -31,17 +33,18 @@ type Metrics struct {
 
 // Config 按协议是否出现配置块显式启用服务，不根据环境名推断行为。
 type Config struct {
-	Name            string            `yaml:"name"`             // 服务名称及 HMAC 目标服务；必填，约束同 AppKey。
-	ShutdownTimeout time.Duration     `yaml:"shutdown_timeout"` // 全局排空预算；缺省 20s，必须为正且小于 systemd TimeoutStopSec。
-	HTTP            *gsrv.HTTPConfig  `yaml:"http"`             // HTTP 配置块；整段缺失即关闭；子字段默认值见框架 Config。
-	GRPC            *gsrv.GRPCConfig  `yaml:"grpc"`             // 公开 gRPC 配置块；整段缺失即关闭；至少启用一种公开协议。
-	GatewaySocket   string            `yaml:"gateway_socket"`   // proto HTTP gateway 私有 socket 路径；留空关闭，非空要求 HTTP，父目录仅服务用户可访问。
-	RateLimitQPS    int               `yaml:"rate_limit_qps"`   // 每 AppKey 的 HTTP/gRPC 合计本地 QPS；缺省 0=显式不启用，负数非法；burst=QPS。
-	Auth            Auth              `yaml:"auth"`             // HTTP 防重放容量；缺省采用有界默认值，无外部存储依赖。
-	Metrics         Metrics           `yaml:"metrics"`          // 最小运行指标；缺省关闭，启用要求 HTTP 本机管理路由。
-	Keys            []Key             `yaml:"keys"`             // 调用方凭据引用列表；必填，不能通过空列表关闭鉴权。
-	Log             gsrv.LogConfig    `yaml:"log"`              // 日志输出；path 空则控制台，console 缺省 true，level 缺省 info。
-	Credentials     []gsrv.Credential `yaml:"-"`                // 运行期从环境变量解析，不进入 YAML。
+	Name            string                           `yaml:"name"`             // 服务名称及 HMAC 目标服务；必填，约束同 AppKey。
+	ShutdownTimeout time.Duration                    `yaml:"shutdown_timeout"` // 全局排空预算；缺省 20s，必须为正且小于 systemd TimeoutStopSec。
+	HTTP            *gsrv.HTTPConfig                 `yaml:"http"`             // HTTP 配置块；整段缺失即关闭；子字段默认值见框架 Config。
+	GRPC            *gsrv.GRPCConfig                 `yaml:"grpc"`             // 公开 gRPC 配置块；整段缺失即关闭；至少启用一种公开协议。
+	GatewaySocket   string                           `yaml:"gateway_socket"`   // proto HTTP gateway 私有 socket 路径；留空关闭，非空要求 HTTP，父目录仅服务用户可访问。
+	RateLimitQPS    int                              `yaml:"rate_limit_qps"`   // 每 AppKey 的 HTTP/gRPC 合计本地 QPS；缺省 0=显式不启用，负数非法；burst=QPS。
+	Auth            Auth                             `yaml:"auth"`             // HTTP 防重放容量；缺省采用有界默认值，无外部存储依赖。
+	Metrics         Metrics                          `yaml:"metrics"`          // 最小运行指标；缺省关闭，启用要求 HTTP 本机管理路由。
+	Keys            []Key                            `yaml:"keys"`             // 调用方凭据引用列表；必填，不能通过空列表关闭鉴权。
+	Log             gsrv.LogConfig                   `yaml:"log"`              // 日志输出；path 空则控制台，console 缺省 true，level 缺省 info。
+	Credentials     []gsrv.Credential                `yaml:"-"`                // 运行期从环境变量解析，不进入 YAML。
+	Clients         map[string]gsrv.DownstreamConfig `yaml:"clients"`          // 固定依赖名称到出站配置；缺省空、不建客户端，最多64项，由runtime装配。
 }
 
 // Load 严格解析、补默认值并校验 secret 环境变量；错误不回显凭据。
@@ -98,6 +101,19 @@ func Load(path string) (*Config, error) {
 		if cfg.Auth.NonceCapacity < len(callers) || cfg.Auth.NonceCapacityPerAppKey > cfg.Auth.NonceCapacity/len(callers) {
 			return nil, errors.New("service: nonce reservations exceed global capacity")
 		}
+	}
+	if len(cfg.Clients) > 64 {
+		return nil, errors.New("service: at most 64 downstream clients allowed")
+	}
+	for _, name := range slices.Sorted(maps.Keys(cfg.Clients)) {
+		if !gsrv.ValidName(name) {
+			return nil, errors.New("service: invalid downstream name")
+		}
+		client, err := resolveClient(cfg.Clients[name])
+		if err != nil {
+			return nil, fmt.Errorf("load client %s: %w", name, err)
+		}
+		cfg.Clients[name] = client
 	}
 	return &cfg, nil
 }

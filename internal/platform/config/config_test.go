@@ -15,7 +15,7 @@ func TestExampleMatchesLoadedConfigAndDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.HTTP == nil || cfg.GRPC == nil || cfg.GatewaySocket == "" || len(cfg.Credentials) != 1 || cfg.RateLimitQPS != 100 || !cfg.Log.ConsoleEnabled() || cfg.GRPC.MaxInflight != 100 || cfg.Auth.NonceCapacity != 100000 || cfg.Auth.NonceCapacityPerAppKey != 0 || cfg.Metrics.Enabled {
+	if cfg.HTTP == nil || cfg.GRPC == nil || cfg.GatewaySocket == "" || len(cfg.Credentials) != 1 || cfg.RateLimitQPS != 100 || !cfg.Log.ConsoleEnabled() || cfg.GRPC.MaxInflight != 100 || cfg.Auth.NonceCapacity != 100000 || cfg.Auth.NonceCapacityPerAppKey != 0 || cfg.Metrics.Enabled || len(cfg.Clients) != 0 {
 		t.Fatal("example assembly differs")
 	}
 	for _, test := range []struct {
@@ -46,6 +46,98 @@ func TestExampleMatchesLoadedConfigAndDefaults(t *testing.T) {
 				t.Fatal("defaults or disabled-protocol secret differ")
 			}
 		})
+	}
+}
+
+func TestDownstreamConfigurationDefaultsAndValidation(t *testing.T) {
+	t.Setenv("SERVICE_APP_TOKEN", strings.Repeat("i", 32))
+	t.Setenv("PEER_SECRET", strings.Repeat("s", 32))
+	t.Setenv("PEER_TOKEN", strings.Repeat("t", 32))
+	base := "name: info\ngrpc: {}\nkeys:\n - app_key: inbound\n   key_id: primary\n   token_env: SERVICE_APP_TOKEN\nclients:\n"
+	for _, tc := range []struct {
+		name, client string
+		valid        bool
+	}{
+		{"both", " peer:\n  app_key: self\n  key_id: primary\n  secret_env: PEER_SECRET\n  token_env: PEER_TOKEN\n  http: {service: peer-service, base_url: 'http://127.0.0.1:8081'}\n  grpc: {target: '127.0.0.1:9091', plaintext: true}\n", true},
+		{"grpc-only", " peer:\n  app_key: self\n  token_env: PEER_TOKEN\n  grpc: {target: 'example.com:443'}\n", true},
+		{"missing-protocol", " peer: {app_key: self}\n", false},
+		{"remote-plaintext", " peer:\n  app_key: self\n  token_env: PEER_TOKEN\n  grpc: {target: 'example.com:9091', plaintext: true}\n", false},
+		{"negative-protection", " peer:\n  app_key: self\n  token_env: PEER_TOKEN\n  protection: {max_inflight: -1}\n  grpc: {target: '127.0.0.1:9091', plaintext: true}\n", false},
+		{"unknown-retry", " peer:\n  app_key: self\n  token_env: PEER_TOKEN\n  retry: true\n  grpc: {target: '127.0.0.1:9091', plaintext: true}\n", false},
+		{"missing-credential", " peer:\n  app_key: self\n  token_env: PEER_MISSING\n  grpc: {target: '127.0.0.1:9091', plaintext: true}\n", false},
+		{"unsafe-name", " 'bad name': {app_key: self}\n", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.yml")
+			if err := os.WriteFile(path, []byte(base+tc.client), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := Load(path)
+			if (err == nil) != tc.valid {
+				t.Fatalf("valid=%v err=%v", tc.valid, err)
+			}
+			if err == nil {
+				peer := cfg.Clients["peer"]
+				if peer.Protection.Timeout.String() != "3s" || peer.Protection.MaxInflight != 100 || peer.Protection.CircuitBreaker || peer.Credential.AppKey != "self" || peer.Credential.Token != strings.Repeat("t", 32) {
+					t.Fatal("defaults/own credential differ")
+				}
+				if peer.HTTP != nil && (peer.HTTP.MaxRequestBytes != 1<<20 || peer.HTTP.MaxResponseBytes != 10<<20 || peer.Credential.Secret != strings.Repeat("s", 32)) {
+					t.Fatal("HTTP defaults differ")
+				}
+			}
+		})
+	}
+}
+
+func TestCommentedClientExampleLoadsAllFields(t *testing.T) {
+	t.Setenv("SERVICE_APP_SECRET", strings.Repeat("i", 32))
+	t.Setenv("SERVICE_APP_TOKEN", strings.Repeat("i", 32))
+	t.Setenv("PEER_APP_SECRET", strings.Repeat("s", 32))
+	t.Setenv("PEER_APP_TOKEN", strings.Repeat("t", 32))
+	data, err := os.ReadFile("../../../config/env/env.yml.example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var lines []string
+	collect := false
+	for line := range strings.SplitSeq(string(data), "\n") {
+		if line == "# clients:" {
+			collect = true
+		}
+		if collect && strings.HasPrefix(line, "# 不提供retry") {
+			break
+		}
+		if collect {
+			if !strings.HasPrefix(line, "# ") {
+				t.Fatal("client example block malformed")
+			}
+			lines = append(lines, strings.TrimPrefix(line, "# "))
+		}
+	}
+	if len(lines) == 0 {
+		t.Fatal("client example missing")
+	}
+	actual := strings.Split(string(data), "\n")
+	for i, line := range actual {
+		if strings.HasPrefix(line, "clients: {}") {
+			actual[i] = strings.Join(lines, "\n")
+			break
+		}
+	}
+	path := filepath.Join(t.TempDir(), "example.yml")
+	if err := os.WriteFile(path, []byte(strings.Join(actual, "\n")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := cfg.Clients["peer"]
+	if len(cfg.Clients) != 1 || client.HTTP == nil || client.GRPC == nil || client.HTTP.Service != "peer-service" || client.HTTP.MaxRequestBytes != 1<<20 || client.HTTP.MaxResponseBytes != 10<<20 || client.HTTP.MaxIdleConnsPerHost != 10 || client.HTTP.MaxConnsPerHost != 100 || client.GRPC.MaxRecvBytes != 1<<20 || client.GRPC.MaxSendBytes != 1<<20 || !client.GRPC.Plaintext || client.Protection.Timeout.String() != "3s" || client.Protection.MaxInflight != 100 || client.Protection.CircuitBreaker || client.Credential.AppKey != "this-service" || client.Credential.Secret != strings.Repeat("s", 32) || client.Credential.Token != strings.Repeat("t", 32) {
+		t.Fatal("commented example and actual schema/defaults differ")
+	}
+	if _, err := InspectExample(path); err != nil {
+		t.Fatal(err)
 	}
 }
 

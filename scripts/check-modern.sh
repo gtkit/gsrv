@@ -3,9 +3,10 @@
 set -euo pipefail
 result=$(mktemp)
 trap 'rm -f "$result"' EXIT
-go fix -diff ./... > "$result"
-if [ -s "$result" ]; then
+fix_status=0
+go fix -diff ./... > "$result" || fix_status=$?
+if [ "$fix_status" -ne 0 ] || [ -s "$result" ]; then
   cat "$result"
-  echo '请应用上述现代 Go 写法并重新检查。' >&2
+  echo 'go fix 检查未通过；请处理上面的诊断或现代写法差异后重跑。' >&2
   exit 1
 fi

@@ -100,8 +100,8 @@ flowchart TD
   B --> C[环境变量解析凭据 缺失即失败]
   C --> D[bootstrap/logging 初始化 logger/v2]
   D --> E[创建分区 nonce 的 verifier 共享 limiter 一个 health.State 可选指标]
-  E --> F[runtime/module/info.Build → application]
-  F --> G[transport/grpc.NewHandler]
+  E --> F[runtime/module/info.Build → application 与可选出站clients]
+  F --> G[transport/grpc.NewHandler 仅使用application]
   G --> H[bootstrap/grpc 注册公开 gRPC 与可选私有 backend]
   H --> I[bootstrap/gateway 构造 HTTP 与 gateway 连接]
   I --> J[bootstrap/serve 创建 App 校验共享健康状态]
@@ -314,9 +314,9 @@ metrics.enabled缺省false；启用时HTTP保留GET /metrics，只允许RemoteAd
 
 1. 复制源码到新目录并建立独立 Git 仓库，排除 `.git`、`bin`、`run`、`logs`、真实配置、凭据和证书私钥。记录来源骨架的提交，避免复制已有服务的业务数据或运行产物。
 2. 将 `go.mod` 的 module 改为服务实际仓库路径。例如验证码服务演示路径可用 `go mod edit -module=example.com/sms-service`；实际使用须换成自己的路径。
-3. 将 `cmd`、`internal`、`gsrv.go` 中的自模块 imports（包括测试）、proto `go_package`、`scripts/check-architecture.sh` 中的自模块匹配路径同步改为新路径。保留 gtkit 等既有依赖，禁止把所有第三方 import 一起替换。
+3. 将 `cmd`、`internal`、`gsrv.go` 中的自模块 imports（包括测试）和 proto `go_package` 同步改为新路径。架构传感器自动读取当前module；保留gtkit等依赖，不改检查器中用于识别旧骨架的常量，禁止全局替换第三方路径。
 4. 执行 `GOWORK=off make gen` 和 `GOWORK=off go mod tidy`，通过契约重新生成 pb，禁止直接改生成产物。
-5. 从 `config/env/env.yml.example` 创建真实配置，调整 `name`、HTTP/gRPC 端口、gateway socket 和凭据环境变量引用。`name` 与调用方 HMAC 目标服务名一致；AppKey 代表调用方。同机服务需要不同监听端口和独立运行目录。
+5. 在 `config/env/env.yml.example` 和真实配置同步调整 `name`、HTTP/gRPC端口、gateway socket和凭据环境变量引用；改名副本须替换example-service。`name`与调用方HMAC目标一致；同机服务需要不同监听端口和独立运行目录。
 6. 按 proto → application command/result/ports → runtime adapters → transport 映射 → bootstrap 注册开发验证码/推送/文件/身份模块；业务规则不放进通用封装，目录层级保持不变。
 7. 执行 `GOWORK=off make check`、`make build` 并验证实际接口。公共能力修复不会自动更新已有服务，应逐服务同步源码并验证，不用再次覆盖整个仓库。
 
@@ -362,7 +362,7 @@ WantedBy=multi-user.target
 | gateway | 私有 socket 身份通道、配额一次 | 伪造客户端内部头无效、HTTP/gRPC同配额 |
 | 交付 | 文档/配置/systemd说明/门禁同步 | make check、Linux构建；依赖调整时执行漏洞检查 |
 
-`make check` 包含当前项目的 build/lint/vet/race/go fix -diff/架构传感器/buf lint。CI 执行相同检查和 `make build`，不再构建独立服务起始目录。真实协议测试只在本机临时端口/socket，凭据为测试生成值；不触达媒体、DB、Redis 或生产。Linux 交叉编译验证目标平台；复制的新服务需在自己的仓库执行相同门禁。
+`make check` 包含当前项目的build/lint/vet/race/go fix -diff/架构传感器及proto-check/copy-check。CI执行相同检查和make build。真实协议测试只在本机临时端口/socket，凭据为测试生成值；不触达媒体、DB、Redis或生产。Linux交叉编译验证目标平台；复制的新服务在自己的仓库执行相同门禁。
 
 OpenSpec 按任务记录执行并严格校验，完成后归档合并 spec。回滚是恢复本次源码、配置与依赖，不涉及持久化迁移。交付结果以实际检查日志为准；不可达的外部漏洞库须明确报告，不能将未完成扫描写为通过。
 
@@ -384,3 +384,83 @@ OpenSpec 按任务记录执行并严格校验，完成后归档合并 spec。回
 2026-10-14 整仓复制方式清理：已移除重复的独立服务起始目录及检查/构建调用，根文档同步整仓复制流程，systemd样例保留在本文。其余目录层级、Go源码、配置示例、锁定依赖及根proto/pb保持不变。实际运行 `GOWORK=off make check` 全部通过：build、golangci-lint（0 issues）、vet、race（count=1、timeout=5m）、go fix -diff无输出、架构传感器与buf lint；`make build` 生成Linux amd64静态二进制。另通过bash语法检查、有效模板引用/文档链接核对和git diff --check。受保护根文件哈希、目录集合、既有暂存diff均与操作前一致，本次29个已跟踪删除均属于授权目录。OpenSpec继续本地不跟踪，变更严格校验通过；本轮无依赖变更，未重新执行漏洞扫描。
 
 本轮不进行 Git 提交、push、tag、Release、容器或生产部署。
+
+## 13. 出站调用与复制门禁（2026-10-14）
+
+本阶段沿用所有现有目录：HTTP客户端在internal/pkg/httpserver/client.go，gRPC客户端在grpcserver/client.go，共享Dependency在breaker/dependency.go，出站观测在logging/outbound.go，TLS工具在configloader/tls.go。platform/config处理服务级配置组合和环境变量引用；runtime/module/info/factory.go装配可选资源，bootstrap仍只负责进程编排和关闭。根gsrv.go提供类型和构造入口，不承载业务规则。
+
+```mermaid
+flowchart TD
+  Config[platform/config: clients校验与凭据解析] --> Runtime[runtime/module: 创建固定下游组件]
+  Runtime --> Guard[同名Dependency: 整体预算和共享并发 可选熔断]
+  Runtime --> HTTP[httpserver.Client: gtkit/httpc 原始字节签名]
+  Runtime --> GRPC[grpcserver.Client: grpc-go 自身metadata]
+  HTTP --> Guard
+  GRPC --> Guard
+  Guard --> Observe[logging: 出站日志与固定指标]
+  Runtime --> Adapter[runtime adapter: 协议和领域错误翻译]
+  Adapter --> Port[application只消费自己的port]
+  Stop[bootstrap: 入站排空后Stop及错误路径Close] --> HTTP
+  Stop --> GRPC
+```
+
+InfoService不增加下游业务调用，不因配置clients而自动发请求或执行降级。客户端构造只准备资源；gRPC建连惰性进行。关键依赖是否影响readiness仍由模块显式注册Check，配置一个客户端不等于自动将它设为关键依赖。
+
+配置缺省`clients: {}`，最多64个固定安全名称；每项可启用HTTP、gRPC或两者。各协议共用一个Dependency，不能为两个协议分别创建同名保护后声称总并发共享。字段、默认值与关联如下，完整可启用示例见根`.example`注释块：
+
+| clients.<name>字段 | 用途与缺省/约束 |
+|---|---|
+| app_key | 本服务访问此下游的身份，必填安全标识；不转发入站AppKey |
+| key_id | HTTP签名版本，HTTP必填安全标识；仅gRPC可空 |
+| secret_env/token_env | HTTP/gRPC凭据变量名，对应协议启用必填合法环境变量引用，值至少32字节 |
+| protection.timeout | 完整调用含stream预算；0/缺省3s，必须正，不延长caller deadline；长期stream显式调大 |
+| protection.max_inflight | 此依赖HTTP/gRPC合计在途；0/缺省100，必须正；满时立即失败 |
+| protection.circuit_breaker | 缺省false；开启沿用30s窗口、至少20样本、失败比0.5、开启10s、半开1；代码可提供BreakerConfig的阈值/分类 |
+| http.service/base_url | 必填HMAC目标名与固定http(s) origin；目标名与对方name一致，origin无用户/路径前缀/query/fragment，HTTP仅loopback |
+| http.ca_file | 额外服务器CA路径，相对cwd；空使用系统信任，HTTP必须空 |
+| http.max_request_bytes | 已编码签名请求体；0/缺省1MiB，范围(0,1MiB] |
+| http.max_response_bytes | 解压后响应读取；0/缺省10MiB，正且<MaxInt64，超限不给body |
+| http.max_idle_conns_per_host | 空闲连接保留；0/缺省10，正且不超过总连接上限 |
+| http.max_conns_per_host | 总连接数；0/缺省100，正，等待受整体预算限制；HTTP/2连接数不等于调用并发 |
+| grpc.target | 静态host:port，端口1–65535；不接入注册中心或远端service config |
+| grpc.plaintext | 缺省false使用TLS；true仅loopback/localhost，CA/server_name必须空 |
+| grpc.ca_file/server_name | CA空使用系统信任，server_name空使用target host；保持服务器证书验证 |
+| grpc.max_recv_bytes/max_send_bytes | 单条消息限制，0/缺省各1MiB，必须正；单次CallOption不能放宽配置上限 |
+
+HTTP调用固定origin、不跟随重定向、不使用环境代理；每次框架调用生成新timestamp/nonce，对最终URI、Content-Type和原始body字节签名。输入headers被复制，授权、签名、私有gateway与旧request ID字段重写或剔除；使用本服务配置身份，不沿用上游调用方身份。`.Do(ctx, method, path, body, headers)`的path以/开头，可含query；body在调用期间由调用方保持不变。非2xx保留状态/header/有限body供runtime adapter翻译，同时返回安全公共错误；网络与响应读取错误不向访问日志输出URL/body/原始错误。响应体总会关闭。
+
+在runtime adapter内使用已装配组件的调用片段如下（应用层仍使用自身port）：
+
+```go
+response, err := components.HTTPClients["peer"].Do(ctx, http.MethodGet, "/v1/service", nil, nil)
+if err != nil {
+    return fmt.Errorf("read peer information: %w", err)
+}
+// 在adapter内把response.StatusCode/Header/Body翻译为application结果。
+
+client := infov1.NewInfoServiceClient(components.GRPCClients["peer"])
+result, err := client.GetInfo(ctx, &infov1.GetInfoRequest{})
+if err != nil {
+    return fmt.Errorf("read peer information: %w", err)
+}
+// 在adapter内把result翻译为协议无关的application结果。
+```
+
+gRPC wrapper实现ClientConnInterface，使用自己的AppKey/token与有效request ID，保留调用方其他metadata但清理已知身份/私有gateway字段。禁用应用和透明重试及resolver service config，不自动延长caller deadline。下游gRPC错误保留协议code但使用安全文案；公共治理code用于统一指标/熔断分类。unary结束即归还容量，stream保持到Recv EOF/错误、取消、预算到期或Close。CloseSend和SendMsg EOF只表示发送侧关闭，不能判完整调用成功；caller需读取最终状态或取消。watcher由客户端持有和等待退出。
+
+共享Dependency不默认排队或重试、不自动降级；可选熔断使用现有gobreaker/v2的TwoStep机制，在完整调用结束时报告。取消、参数、鉴权/权限错误排除；NotFound等业务拒绝不当作下游不可用。调用自身的并发/熔断拒绝不计进熔断失败样本。仍需业务降级时在runtime adapter明确使用既有allow/fallback钩子，不叠加默认重试或重复保护。
+
+出站访问日志字段包含direction=outbound、dependency、protocol、request_id、自己的app_key、duration_ms、error_code。最小指标新增gsrv_dependency_requests_total（固定公共error_code）、errors_total、inflight、rejections_total（inflight/breaker）、duration_seconds（复用既有桶）。仅装配期注册的最多64个目标参与导出，不将URL、AppKey、request ID、body或任意错误文案作为标签；入站指标不重复计入出站。
+
+契约门禁`make proto-check`在自建临时目录生成并比较整个pb集合，覆盖缺失、额外和过期文件，不改工作区，不用Git是否干净判断生成正确性。复制门禁`make copy-check`动态读取go.mod，检查手写自身imports、proto go_package及配置.example的服务名/监听/socket；新module需替换example-service。`bash scripts/check-copy.sh /本机/另一个服务源码目录`显式比较两个示例的标识冲突，不扫描其他仓库、不读取真实配置或凭据，不保证实际目标机端口空闲。架构传感器使用当前module且保留原禁止规则。CI与make check统一执行这些入口，buf和本地插件复用现有安装，首次依赖缓存缺失可能访问Buf源。
+
+本阶段实际验收（2026-10-14）：完整`GOWORK=off make check`通过，包含build、lint（0 issues）、vet、race（count=1、timeout=5m）、go fix -diff无输出、架构、临时proto/pb比较及复制检查。`make build`生成Linux amd64静态二进制。所有真实协议验证使用本机测试服务和假凭据，未连接生产或外部业务系统。
+
+- HTTP真实验签覆盖原始body/escaped path/raw query/Content-Type，入站身份不能替换自己的凭据，request ID透传，新nonce与连接复用；失败不重试、重定向不跟随、超大响应/非法目标拒绝、Close取消并归还共享容量，TLS自定义CA验证通过。
+- gRPC生成客户端真实unary与stream验证覆盖自身metadata、失败只调用一次、协议错误文案隐藏、stream保持槽位、CloseSend不提前归还、EOF/取消/Close回收，以及TLS证书名称校验。回审补齐单次CallOption不能放宽消息上限的unary/stream反证。
+- 共享Dependency覆盖HTTP/gRPC合计容量、并发重复finish只计量一次、取消/参数/身份错误分类、可选熔断；synctest覆盖caller deadline不延长、超时后不能假成功。有界出站指标覆盖并发抓取、固定错误码收敛与64目标上限。
+- 默认.example仍无下游；注释块启用后全部字段可加载，非法参数/未知retry字段/缺失凭据失败。runtime资源关闭、错误装配和InfoService原行为回归通过。
+- 真实整仓副本改module/import/go_package及服务标识后，生成、proto/copy/架构门禁和独立构建通过；向改名副本通用包注入业务import后被传感器拒绝。pb过期、额外、缺失三项各自独立反证失败且文件哈希保持，复制标识冲突单元测试通过。
+- 全部原目录集合、go.mod/go.sum及原proto/pb哈希与实施前一致；无文件移动/删除/暂存变更。新文件均位于现有包和scripts目录，templates未恢复，OpenSpec保持本地忽略。
+
+调用方回审：bootstrap→runtime.Build改用Components并接入Stop/Close，grpc装配使用同一application；platform.Load解析clients与自身凭据；协议wrapper所有结束分支归还Dependency，生成客户端使用ClientConnInterface。未新增业务规则或依赖，业务重试默认关闭。本阶段未重新扫描漏洞数据库，先前扫描属于历史记录。

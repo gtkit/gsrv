@@ -35,6 +35,20 @@ type Breaker[T any] struct{ breaker *gobreaker.CircuitBreaker[T] }
 
 // New 创建熔断器；默认窗口 30s、开启 10s、至少 20 样本、失败比 0.5、半开 1 请求。
 func New[T any](cfg Config) (*Breaker[T], error) {
+	settings, err := breakerSettings(cfg)
+	if err != nil {
+		return nil, err
+	}
+	b := &Breaker[T]{breaker: gobreaker.NewCircuitBreaker[T](settings)}
+	if cfg.Metrics != nil {
+		if err := cfg.Metrics.RegisterBreaker(cfg.Name, func() int { return int(b.State()) }); err != nil {
+			return nil, err
+		}
+	}
+	return b, nil
+}
+
+func breakerSettings(cfg Config) (gobreaker.Settings, error) {
 	if cfg.Interval == 0 {
 		cfg.Interval = 30 * time.Second
 	}
@@ -51,7 +65,7 @@ func New[T any](cfg Config) (*Breaker[T], error) {
 		cfg.HalfOpenRequests = 1
 	}
 	if cfg.Name == "" || cfg.Interval <= 0 || cfg.OpenTimeout <= 0 || cfg.FailureRatio <= 0 || cfg.FailureRatio > 1 {
-		return nil, errors.New("resilience: invalid breaker settings")
+		return gobreaker.Settings{}, errors.New("resilience: invalid breaker settings")
 	}
 	excluded := func(err error) bool {
 		if errors.Is(err, context.Canceled) {
@@ -72,13 +86,7 @@ func New[T any](cfg Config) (*Breaker[T], error) {
 		OnStateChange: func(name string, from, to gobreaker.State) {
 			logger.Warnw("breaker state changed", "dependency", name, "from", from.String(), "to", to.String())
 		}}
-	b := &Breaker[T]{breaker: gobreaker.NewCircuitBreaker[T](settings)}
-	if cfg.Metrics != nil {
-		if err := cfg.Metrics.RegisterBreaker(cfg.Name, func() int { return int(b.State()) }); err != nil {
-			return nil, err
-		}
-	}
-	return b, nil
+	return settings, nil
 }
 
 // Execute 执行合作式可取消调用；不自动重试或降级。

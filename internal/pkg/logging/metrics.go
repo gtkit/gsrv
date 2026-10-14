@@ -24,11 +24,12 @@ type protocolMetrics struct {
 
 // Metrics 是服务显式持有的最小指标集，无全局注册或动态请求标签。
 type Metrics struct {
-	mu         sync.Mutex
-	service    string
-	protocols  [2]protocolMetrics
-	nonceStats func() (int, int, bool)
-	breakers   map[string]func() int
+	mu           sync.Mutex
+	service      string
+	protocols    [2]protocolMetrics
+	nonceStats   func() (int, int, bool)
+	breakers     map[string]func() int
+	dependencies map[string][2]outboundCounters
 }
 
 // NewMetrics 构造指标，service 为1–64位安全ASCII名称；不启动监听或后台任务。
@@ -36,7 +37,7 @@ func NewMetrics(service string) (*Metrics, error) {
 	if !metricName(service) {
 		return nil, errors.New("metrics: invalid service name")
 	}
-	return &Metrics{service: service, breakers: make(map[string]func() int)}, nil
+	return &Metrics{service: service, breakers: make(map[string]func() int), dependencies: make(map[string][2]outboundCounters)}, nil
 }
 
 func metricName(name string) bool {
@@ -185,6 +186,7 @@ func (m *Metrics) ServeHTTP(w http.ResponseWriter, _ *http.Request) {
 	for _, name := range slices.Sorted(maps.Keys(breakers)) {
 		fmt.Fprintf(&body, "gsrv_breaker_state{%s,dependency=%q} %d\n", service, name, breakers[name]())
 	}
+	m.writeDependencies(&body, service)
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	_, _ = w.Write([]byte(body.String()))

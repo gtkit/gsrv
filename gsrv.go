@@ -237,3 +237,41 @@ func RunDependency[T any](ctx context.Context, timeout time.Duration, guard *Bre
 func NewHTTPClient(timeout time.Duration, options ...httpc.Option) (*httpc.Client, error) {
 	return breaker.NewHTTPClient(timeout, options...)
 }
+
+// 出站客户端沿用内部现有包；静态目标与自身凭据在runtime层装配。
+type (
+	Dependency        = breaker.Dependency
+	DependencyConfig  = breaker.DependencyConfig
+	ServiceHTTPConfig = httptransport.ClientConfig
+	ServiceHTTPClient = httptransport.Client
+	HTTPResponse      = httptransport.ClientResponse
+	ServiceGRPCConfig = grpctransport.ClientConfig
+	ServiceGRPCClient = grpctransport.Client
+)
+
+// NewDependency 创建HTTP/gRPC共用的下游保护；不自动重试或降级。
+func NewDependency(name string, cfg DependencyConfig, metrics *Metrics) (*Dependency, error) {
+	return breaker.NewDependency(name, cfg, metrics)
+}
+
+// NewServiceHTTPClient 使用自身HMAC身份、固定origin和共享Dependency。
+func NewServiceHTTPClient(cfg ServiceHTTPConfig, credential Credential, dependency *Dependency) (*ServiceHTTPClient, error) {
+	return httptransport.NewClient(cfg, credential, dependency)
+}
+
+// NewServiceGRPCClient 可直接传给proto生成客户端；TLS缺省开启，重试关闭。
+func NewServiceGRPCClient(cfg ServiceGRPCConfig, credential Credential, dependency *Dependency) (*ServiceGRPCClient, error) {
+	return grpctransport.NewClient(cfg, credential, dependency)
+}
+
+// DownstreamConfig 是clients命名项；HTTP/gRPC共用自身AppKey、保护及固定指标名称。
+type DownstreamConfig struct {
+	AppKey     string             `yaml:"app_key"`    // 本服务访问该下游的身份；必填，1–64位安全ASCII，不转发入站调用方身份。
+	KeyID      string             `yaml:"key_id"`     // HTTP签名密钥版本；HTTP启用必填，安全标识；仅gRPC时可空。
+	SecretEnv  string             `yaml:"secret_env"` // HTTP HMAC密钥变量名；HTTP启用必填，环境值>=32字节，不保存明文。
+	TokenEnv   string             `yaml:"token_env"`  // gRPC Bearer变量名；gRPC启用必填，环境值>=32字节，不保存明文。
+	Protection DependencyConfig   `yaml:"protection"` // 合计并发与整体预算；缺省100/3s，熔断false，不配置业务重试。
+	HTTP       *ServiceHTTPConfig `yaml:"http"`       // 缺失关闭该依赖HTTP；至少启用HTTP/gRPC之一。
+	GRPC       *ServiceGRPCConfig `yaml:"grpc"`       // 缺失关闭该依赖gRPC；固定target，TLS默认开启。
+	Credential Credential         `yaml:"-"`          // 加载后解析的自身凭据，仅运行时使用。
+}
