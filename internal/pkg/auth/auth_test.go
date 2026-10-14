@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -20,6 +21,141 @@ import (
 
 func credentials() auth.Credential {
 	return auth.Credential{AppKey: "caller", KeyID: "primary", Secret: strings.Repeat("s", 32), Token: strings.Repeat("t", 32)}
+}
+
+func TestNonceReservationsRotationAndExpiration(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		a := credentials()
+		b := a
+		b.AppKey = "other"
+		rotated := a
+		rotated.KeyID = "rotated"
+		v, err := auth.New(auth.Config{Service: "test", Credentials: []auth.Credential{a, b, rotated}, NonceCapacity: 2})
+		if err != nil {
+			t.Fatal(err)
+		}
+		call := func(credential auth.Credential, nonce string) fault.Code {
+			r := httptest.NewRequest("GET", "/check", nil)
+			if err := auth.SignHTTP(r, "test", credential, time.Now(), nonce); err != nil {
+				t.Fatal(err)
+			}
+			_, err := v.AuthenticateHTTP(r)
+			return fault.CodeOf(err)
+		}
+		for _, tc := range []struct {
+			credential auth.Credential
+			nonce      string
+			code       fault.Code
+		}{
+			{a, "first", fault.OK}, {rotated, "second", fault.ResourceExhausted}, {b, "first", fault.OK},
+			{rotated, "first", fault.Unauthenticated}, {b, "second", fault.ResourceExhausted},
+		} {
+			if got := call(tc.credential, tc.nonce); got != tc.code {
+				t.Fatalf("got=%s want=%s", got, tc.code)
+			}
+		}
+		if used, cap, ok := v.NonceStats(); used != 2 || cap != 2 || !ok {
+			t.Fatal("occupancy/capacity mismatch")
+		}
+		synctest.Sleep(32 * time.Second)
+		if used, _, _ := v.NonceStats(); used != 0 {
+			t.Fatal("expired occupancy retained")
+		}
+		if code := call(rotated, "third"); code != fault.OK {
+			t.Fatal("expired reservation not freed")
+		}
+	})
+}
+
+func TestNonceReservationConcurrentAndHTTPOnlyCount(t *testing.T) {
+	a := credentials()
+	b := a
+	b.AppKey = "other"
+	v, err := auth.New(auth.Config{Service: "test", Credentials: []auth.Credential{a, b}, NonceCapacity: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var success [2]atomic.Int32
+	var wg sync.WaitGroup
+	for i, credential := range []auth.Credential{a, b} {
+		for range 50 {
+			wg.Go(func() {
+				r := httptest.NewRequest("GET", "/check", nil)
+				if err := auth.SignHTTP(r, "test", credential, time.Now(), rand.Text()); err != nil {
+					t.Error(err)
+					return
+				}
+				_, err := v.AuthenticateHTTP(r)
+				if err == nil {
+					success[i].Add(1)
+				} else if fault.CodeOf(err) != fault.ResourceExhausted {
+					t.Error(err)
+				}
+			})
+		}
+	}
+	wg.Wait()
+	if success[0].Load() != 1 || success[1].Load() != 1 {
+		t.Fatal("caller reservations not isolated/atomic")
+	}
+	b.Secret = ""
+	if _, err := auth.New(auth.Config{Service: "test", Credentials: []auth.Credential{a, b}, NonceCapacity: 1}); err != nil {
+		t.Fatal("Bearer-only key consumed HTTP reservation", err)
+	}
+}
+
+type nonceResult struct {
+	used bool
+	err  error
+}
+
+func (s nonceResult) Use(context.Context, string, time.Time) (bool, error) { return s.used, s.err }
+
+func TestNonceConfigAndCustomStores(t *testing.T) {
+	a := credentials()
+	b := a
+	b.AppKey = "other"
+	var typedNil *auth.MemoryNonceStore
+	for _, store := range []auth.NonceStore{typedNil, new(auth.MemoryNonceStore)} {
+		if _, err := auth.New(auth.Config{Service: "test", Credentials: []auth.Credential{a}, Nonces: store}); err == nil {
+			t.Fatal("invalid memory store accepted")
+		}
+	}
+	for _, tc := range []struct {
+		name       string
+		total, per int
+		valid      bool
+	}{
+		{"default", 0, 0, true}, {"explicit", 4, 1, true}, {"too small", 1, 0, false}, {"overcommitted", 4, 3, false},
+		{"negative", -1, 0, false}, {"negative caller", 4, -1, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := auth.New(auth.Config{Service: "test", Credentials: []auth.Credential{a, b}, NonceCapacity: tc.total, NonceCapacityPerAppKey: tc.per})
+			if (err == nil) != tc.valid {
+				t.Fatalf("valid=%v err=%v", tc.valid, err)
+			}
+		})
+	}
+	for _, tc := range []struct {
+		store nonceResult
+		code  fault.Code
+	}{
+		{nonceResult{used: true}, fault.OK}, {nonceResult{}, fault.Unauthenticated},
+		{nonceResult{err: errors.New("store failed")}, fault.Unavailable},
+		{nonceResult{err: context.DeadlineExceeded}, fault.DeadlineExceeded}, {nonceResult{err: context.Canceled}, fault.Canceled},
+	} {
+		v, err := auth.New(auth.Config{Service: "test", Credentials: []auth.Credential{a}, Nonces: tc.store})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = v.AuthenticateHTTP(signed(t, time.Now()))
+		if fault.CodeOf(err) != tc.code {
+			t.Fatalf("store code=%s want=%s", fault.CodeOf(err), tc.code)
+		}
+		if _, _, ok := v.NonceStats(); ok {
+			t.Fatal("custom store fabricated occupancy")
+		}
+	}
 }
 func verifier(t *testing.T) *auth.Verifier {
 	t.Helper()

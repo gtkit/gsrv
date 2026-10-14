@@ -146,6 +146,63 @@ func TestInflightBoundAndHealthBypass(t *testing.T) {
 	wg.Wait()
 }
 
+func TestMetricsRouteAndFinalRequestAccounting(t *testing.T) {
+	credential := auth.Credential{AppKey: "caller", KeyID: "key", Secret: strings.Repeat("s", 32)}
+	v, err := auth.New(auth.Config{Service: "test", Credentials: []auth.Credential{credential}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, _ := logging.NewMetrics("test")
+	m.BindNonceStats(v.NonceStats)
+	server, err := New("test", Config{}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/panic" {
+			panic("private")
+		}
+		w.WriteHeader(204)
+	}), v, nil, health.New(), WithMetrics(m))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"/ok", "/panic"} {
+		r := httptest.NewRequest("GET", path, nil)
+		if err := auth.SignHTTP(r, "test", credential, time.Now(), strings.TrimPrefix(path, "/")); err != nil {
+			t.Fatal(err)
+		}
+		server.ServeHTTP(httptest.NewRecorder(), r)
+	}
+	server.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/unsigned-dynamic-id", nil))
+	server.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/livez", nil))
+	for _, tc := range []struct {
+		peer string
+		code int
+	}{{"127.0.0.1:12", 200}, {"[::1]:12", 200}, {"198.51.100.1:12", 403}, {"invalid", 403}} {
+		r := httptest.NewRequest("GET", "/metrics", nil)
+		r.RemoteAddr = tc.peer
+		r.Header.Set("X-Forwarded-For", "127.0.0.1")
+		rec := httptest.NewRecorder()
+		server.ServeHTTP(rec, r)
+		if rec.Code != tc.code {
+			t.Errorf("peer %s=%d", tc.peer, rec.Code)
+		}
+		if tc.code == 200 {
+			for _, sample := range []string{`gsrv_requests_total{service="test",protocol="http"} 3`, `gsrv_errors_total{service="test",protocol="http"} 2`, `gsrv_inflight{service="test",protocol="http"} 0`, `gsrv_nonce_entries{service="test"} 2`} {
+				if !strings.Contains(rec.Body.String(), sample+"\n") {
+					t.Errorf("missing %s", sample)
+				}
+			}
+		}
+	}
+	disabled, err := New("test", Config{}, http.NotFoundHandler(), v, nil, health.New())
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	disabled.ServeHTTP(rec, httptest.NewRequest("GET", "/metrics", nil))
+	if rec.Code != 401 {
+		t.Fatal("disabled metrics route was installed")
+	}
+}
+
 func TestRemoteListenerRequiresTLSAndBodyBound(t *testing.T) {
 	credential := auth.Credential{AppKey: "caller", KeyID: "key", Secret: strings.Repeat("s", 32)}
 	verifier, err := auth.New(auth.Config{Service: "test", MaxBodyBytes: 8, Credentials: []auth.Credential{credential}})

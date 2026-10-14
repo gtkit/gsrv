@@ -20,8 +20,9 @@ type fakeServer struct {
 	t       *testing.T
 }
 
-func (s *fakeServer) Listen() error { return s.failure }
-func (s *fakeServer) Serve() error  { <-s.done; return nil }
+func (s *fakeServer) Listen() error              { return s.failure }
+func (s *fakeServer) HealthState() *health.State { return s.state }
+func (s *fakeServer) Serve() error               { <-s.done; return nil }
 func (s *fakeServer) Shutdown(context.Context) error {
 	if s.state.Ready(s.t.Context()) {
 		s.t.Error("shutdown began before readiness was removed")
@@ -89,6 +90,33 @@ func TestServeFailureStopsWholeApp(t *testing.T) {
 	}
 	if second.closed.Load() != 1 {
 		t.Fatal("peer server left running")
+	}
+}
+
+func TestHealthAssemblyRejectsInvalidServers(t *testing.T) {
+	state := health.New()
+	server := &fakeServer{state: state}
+	var typedNil *fakeServer
+	for _, tc := range []struct {
+		name    string
+		servers []lifecycle.Server
+		options []lifecycle.Option
+		valid   bool
+	}{
+		{"adopt", []lifecycle.Server{server}, nil, true},
+		{"shared", []lifecycle.Server{server}, []lifecycle.Option{lifecycle.WithHealth(state)}, true},
+		{"mismatch", []lifecycle.Server{server, &fakeServer{state: health.New()}}, nil, false},
+		{"wrong App", []lifecycle.Server{server}, []lifecycle.Option{lifecycle.WithHealth(health.New())}, false},
+		{"nil", []lifecycle.Server{nil}, nil, false}, {"typed nil", []lifecycle.Server{typedNil}, nil, false},
+		{"zero health", []lifecycle.Server{server}, []lifecycle.Option{lifecycle.WithHealth(new(health.State))}, false},
+		{"nil health", []lifecycle.Server{server}, []lifecycle.Option{lifecycle.WithHealth(nil)}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := lifecycle.New("test", append(tc.options, lifecycle.WithServers(tc.servers...))...)
+			if (err == nil) != tc.valid {
+				t.Fatalf("valid=%v err=%v", tc.valid, err)
+			}
+		})
 	}
 }
 func ExampleNew() {

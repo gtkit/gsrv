@@ -3,6 +3,8 @@ package interceptor
 import (
 	"context"
 	"errors"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,6 +17,8 @@ import (
 
 	"github.com/gtkit/gsrv/internal/pkg/auth"
 	"github.com/gtkit/gsrv/internal/pkg/fault"
+	"github.com/gtkit/gsrv/internal/pkg/limiter"
+	"github.com/gtkit/gsrv/internal/pkg/logging"
 	request "github.com/gtkit/gsrv/internal/pkg/requestid"
 )
 
@@ -22,6 +26,84 @@ type tokenFunc func(context.Context, string, string) (auth.Identity, error)
 
 func (f tokenFunc) AuthenticateToken(ctx context.Context, key, token string) (auth.Identity, error) {
 	return f(ctx, key, token)
+}
+
+func TestGateReleaseOnAuthenticationValidationErrorAndPanic(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		configure func(*Config)
+		handler   grpc.UnaryHandler
+		code      codes.Code
+	}{
+		{"success", nil, func(context.Context, any) (any, error) { return nil, nil }, codes.OK},
+		{"auth", func(c *Config) {
+			c.Authenticator = tokenFunc(func(context.Context, string, string) (auth.Identity, error) {
+				return auth.Identity{}, fault.New(fault.Unauthenticated, "bad")
+			})
+		}, nil, codes.Unauthenticated},
+		{"validation", func(c *Config) { c.Validate = func(proto.Message) error { return errors.New("bad") } }, nil, codes.InvalidArgument},
+		{"limiter", func(c *Config) {
+			c.Limiter = quotaFunc(func(context.Context, string) (bool, error) { return false, nil })
+		}, nil, codes.ResourceExhausted},
+		{"error", nil, func(context.Context, any) (any, error) { return nil, errors.New("private") }, codes.Internal},
+		{"panic", nil, func(context.Context, any) (any, error) { panic("private") }, codes.Internal},
+		{"cancel", nil, func(context.Context, any) (any, error) { return nil, context.Canceled }, codes.Canceled},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := authenticatedConfig()
+			cfg.Inflight, _ = limiter.NewInflight(1)
+			cfg.Metrics, _ = logging.NewMetrics("test")
+			if tc.configure != nil {
+				tc.configure(&cfg)
+			}
+			handler := tc.handler
+			if handler == nil {
+				handler = func(context.Context, any) (any, error) { t.Error("rejected handler ran"); return nil, nil }
+			}
+			ctx := grpc.NewContextWithServerTransportStream(requestContext(t.Context()), &transportStream{})
+			_, err := Unary("test", cfg)(ctx, wrapperspb.String("request"), &grpc.UnaryServerInfo{FullMethod: "/test.Service/Call"}, handler)
+			if status.Code(err) != tc.code || !cfg.Inflight.Acquire() {
+				t.Fatal("wrong result or unary leaked slot", err)
+			}
+			cfg.Inflight.Release()
+			err = Stream("test", cfg)(nil, &serverStream{ctx: requestContext(t.Context())}, &grpc.StreamServerInfo{FullMethod: "/test.Service/Stream"}, func(_ any, s grpc.ServerStream) error {
+				if err := s.RecvMsg(wrapperspb.String("request")); err != nil {
+					return err
+				}
+				_, err := handler(s.Context(), nil)
+				return err
+			})
+			if status.Code(err) != tc.code || !cfg.Inflight.Acquire() {
+				t.Fatal("wrong result or stream leaked slot", err)
+			}
+			cfg.Inflight.Release()
+			rec := httptest.NewRecorder()
+			cfg.Metrics.ServeHTTP(rec, httptest.NewRequest("GET", "/metrics", nil))
+			if !strings.Contains(rec.Body.String(), `gsrv_inflight{service="test",protocol="grpc"} 0`+"\n") {
+				t.Fatal("inflight gauge leaked")
+			}
+		})
+	}
+}
+
+func TestFullGateExemptsHealthAndTrustedGateway(t *testing.T) {
+	cfg := authenticatedConfig()
+	cfg.Inflight, _ = limiter.NewInflight(1)
+	cfg.Inflight.Acquire()
+	defer cfg.Inflight.Release()
+	cfg.Validate = func(proto.Message) error { return errors.New("business validation failed") }
+	ctx := grpc.NewContextWithServerTransportStream(t.Context(), &transportStream{})
+	_, err := Unary("test", cfg)(ctx, wrapperspb.String("health"), &grpc.UnaryServerInfo{FullMethod: "/grpc.health.v1.Health/Check"}, func(context.Context, any) (any, error) { return nil, nil })
+	if err != nil {
+		t.Fatal("Health hit business gate/auth/validation", err)
+	}
+	cfg.Trusted = true
+	cfg.Validate = nil
+	ctx = grpc.NewContextWithServerTransportStream(metadata.NewIncomingContext(t.Context(), metadata.Pairs(GatewayAppKey, "caller", GatewayKeyID, "key")), &transportStream{})
+	_, err = Unary("test", cfg)(ctx, nil, &grpc.UnaryServerInfo{FullMethod: "/test.Service/Call"}, func(context.Context, any) (any, error) { return nil, nil })
+	if err != nil {
+		t.Fatal("gateway counted twice", err)
+	}
 }
 
 type quotaFunc func(context.Context, string) (bool, error)
@@ -133,9 +215,10 @@ func TestStreamQuotaOnceValidationEachMessageAndRecovery(t *testing.T) {
 
 func TestStreamHealthExemptAndDuplicateCredentialsRejected(t *testing.T) {
 	cfg := authenticatedConfig()
+	cfg.Validate = func(proto.Message) error { return errors.New("business validation failed") }
 	called := false
 	ss := &serverStream{ctx: t.Context()}
-	err := Stream("test", cfg)(nil, ss, &grpc.StreamServerInfo{FullMethod: "/grpc.health.v1.Health/Watch"}, func(any, grpc.ServerStream) error { called = true; return nil })
+	err := Stream("test", cfg)(nil, ss, &grpc.StreamServerInfo{FullMethod: "/grpc.health.v1.Health/Watch"}, func(_ any, s grpc.ServerStream) error { called = true; return s.RecvMsg(wrapperspb.String("health")) })
 	if err != nil || !called {
 		t.Fatal("health stream must be exempt")
 	}

@@ -31,7 +31,8 @@ type (
 	Option = lifecycle.Option
 )
 
-// New 构造一次性运行的 App；至少注册一个 server。
+// New 构造一次性运行的App；至少注册一个server，监听前校验共享健康状态。
+// 未显式WithHealth时采用健康感知server的状态，错配/nil/typed-nil返回错误。
 func New(name string, options ...Option) (*App, error) { return lifecycle.New(name, options...) }
 
 // WithServers 按依赖顺序注册，关闭按同一顺序排空。
@@ -59,7 +60,8 @@ type (
 // NewVerifier 校验凭据并创建共享认证器；空凭据报错。
 func NewVerifier(cfg AuthConfig) (*Verifier, error) { return auth.New(cfg) }
 
-// NewMemoryNonceStore 创建有界、原子去重的本进程 nonce 存储。
+// NewMemoryNonceStore 创建原始全局容量存储；显式注入时容量隔离由装配方负责。
+// 默认NewVerifier会设置按AppKey预留的内存策略。
 func NewMemoryNonceStore(capacity int) (*MemoryNonceStore, error) {
 	return auth.NewMemoryNonceStore(capacity)
 }
@@ -96,6 +98,12 @@ func NewLocalLimiter(namespace string, qps int) (*limiter.Local, error) {
 
 // LogConfig 配置 gtkit/logger/v2；Console 缺省 true，Path 空关闭文件输出。
 type LogConfig = logging.Config
+
+// Metrics 是显式持有的最小运行指标，标签不含请求身份或URL。
+type Metrics = logging.Metrics
+
+// NewMetrics 创建指标集，不启动后台任务或全局注册。
+func NewMetrics(service string) (*Metrics, error) { return logging.NewMetrics(service) }
 
 // NewLogger 先验证输出目录；调用方启动期 SetDefault，退出时 Sync。
 func NewLogger(cfg LogConfig) (*logger.Logger, error) { return logging.New(cfg) }
@@ -145,12 +153,16 @@ type (
 	HTTPConfig        = httptransport.Config
 	HTTPServer        = httptransport.Server
 	HTTPAuthenticator = httptransport.Authenticator
+	HTTPOption        = httptransport.Option
 )
 
 // NewHTTPServer 组合探针、认证、限流、恢复、日志和请求预算。
-func NewHTTPServer(service string, cfg HTTPConfig, handler http.Handler, verifier HTTPAuthenticator, quota RateLimiter, state *HealthState) (*HTTPServer, error) {
-	return httptransport.New(service, cfg, handler, verifier, quota, state)
+func NewHTTPServer(service string, cfg HTTPConfig, handler http.Handler, verifier HTTPAuthenticator, quota RateLimiter, state *HealthState, options ...HTTPOption) (*HTTPServer, error) {
+	return httptransport.New(service, cfg, handler, verifier, quota, state, options...)
 }
+
+// WithHTTPMetrics 注入指标并开启仅直连loopback可读的GET /metrics。
+func WithHTTPMetrics(metrics *Metrics) HTTPOption { return httptransport.WithMetrics(metrics) }
 
 // gRPC 类型只封装协议治理；业务由生成的注册函数接入。
 type (
@@ -175,6 +187,9 @@ func WithGRPCAuth(verifier GRPCAuthenticator) GRPCOption { return grpctransport.
 
 // WithGRPCLimiter 注入与 HTTP 共用的配额；nil 关闭 QPS 限流。
 func WithGRPCLimiter(quota RateLimiter) GRPCOption { return grpctransport.WithLimiter(quota) }
+
+// WithGRPCMetrics 注入外部业务请求指标，健康和私有gateway跳过。
+func WithGRPCMetrics(metrics *Metrics) GRPCOption { return grpctransport.WithMetrics(metrics) }
 
 // WithGRPCHealth 注入与 App/HTTP 共用的健康状态。
 func WithGRPCHealth(state *HealthState) GRPCOption { return grpctransport.WithHealth(state) }

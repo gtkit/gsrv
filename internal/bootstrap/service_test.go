@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -32,7 +33,7 @@ func TestInfoServiceProductionAssembly(t *testing.T) {
 		}
 	})
 	cfg := &config.Config{Name: "info-test", HTTP: &gsrv.HTTPConfig{Addr: "127.0.0.1:0"}, GRPC: &gsrv.GRPCConfig{Addr: "127.0.0.1:0"},
-		GatewaySocket: filepath.Join(directory, "gateway.sock"), ShutdownTimeout: time.Second, Credentials: []gsrv.Credential{testCredentials("a")}}
+		GatewaySocket: filepath.Join(directory, "gateway.sock"), ShutdownTimeout: time.Second, Metrics: config.Metrics{Enabled: true}, Credentials: []gsrv.Credential{testCredentials("a")}}
 	srvs, err := buildServers(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -120,5 +121,23 @@ func TestInfoServiceProductionAssembly(t *testing.T) {
 	info, err := pb.NewInfoServiceClient(connection).GetInfo(callCtx, &pb.GetInfoRequest{})
 	if err != nil || info.GetServiceName() != cfg.Name || info.GetRequestId() != "grpc-info-request" {
 		t.Fatalf("gRPC info=%v err=%v", info, err)
+	}
+	metricsRequest, err := http.NewRequestWithContext(t.Context(), "GET", "http://"+srvs.http.Address()+"/metrics", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metricsResponse, err := client.Do(metricsRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metricsBody, readErr := io.ReadAll(metricsResponse.Body)
+	_ = metricsResponse.Body.Close()
+	if readErr != nil || metricsResponse.StatusCode != 200 {
+		t.Fatal("metrics unavailable", readErr)
+	}
+	for _, want := range []string{`gsrv_requests_total{service="info-test",protocol="http"} 1`, `gsrv_requests_total{service="info-test",protocol="grpc"} 1`, `gsrv_nonce_entries{service="info-test"} 1`} {
+		if !strings.Contains(string(metricsBody), want+"\n") {
+			t.Errorf("assembly metrics missing %s", want)
+		}
 	}
 }

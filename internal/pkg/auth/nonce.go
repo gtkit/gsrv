@@ -4,6 +4,7 @@ import (
 	"container/heap"
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"time"
 )
@@ -16,18 +17,44 @@ type NonceStore interface {
 
 // MemoryNonceStore 是有容量上限的进程内去重存储；不跨重启或副本共享。
 type MemoryNonceStore struct {
-	mu       sync.Mutex
-	capacity int
-	items    map[string]time.Time
-	expiry   expiryHeap
+	mu        sync.Mutex
+	capacity  int
+	items     map[string]time.Time
+	expiry    expiryHeap
+	perAppKey int
+	counts    map[string]int
 }
+
+var errAppKeyCapacity = errors.New("auth: AppKey nonce capacity exhausted")
 
 // NewMemoryNonceStore 创建去重存储，capacity 必须为正值；不启动后台 goroutine。
 func NewMemoryNonceStore(capacity int) (*MemoryNonceStore, error) {
 	if capacity <= 0 {
 		return nil, errors.New("auth: nonce capacity must be positive")
 	}
-	return &MemoryNonceStore{capacity: capacity, items: make(map[string]time.Time)}, nil
+	return &MemoryNonceStore{capacity: capacity, items: make(map[string]time.Time), counts: make(map[string]int)}, nil
+}
+
+func (s *MemoryNonceStore) purge(now time.Time) {
+	for len(s.expiry) > 0 && !s.expiry[0].at.After(now) {
+		old := heap.Pop(&s.expiry).(expiryEntry)
+		delete(s.items, old.key)
+		if s.perAppKey > 0 {
+			partition, _, _ := strings.CutLast(old.key, ":")
+			s.counts[partition]--
+			if s.counts[partition] == 0 {
+				delete(s.counts, partition)
+			}
+		}
+	}
+}
+
+// Usage 返回尚未到期的占用，回收到期项；不启动后台任务。
+func (s *MemoryNonceStore) Usage() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.purge(time.Now())
+	return len(s.items)
 }
 
 // Use 检查并消费 nonce；并发同 key 至多一项成功，满容量时拒绝新 nonce。
@@ -35,23 +62,30 @@ func (s *MemoryNonceStore) Use(ctx context.Context, key string, expiresAt time.T
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
 	now := time.Now()
 	if len(key) > 256 || key == "" || !expiresAt.After(now) {
 		return false, errors.New("auth: invalid nonce retention")
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for len(s.expiry) > 0 && !s.expiry[0].at.After(now) {
-		old := heap.Pop(&s.expiry).(expiryEntry)
-		delete(s.items, old.key)
-	}
+	s.purge(now)
 	if _, exists := s.items[key]; exists {
 		return false, nil
+	}
+	partition, _, _ := strings.CutLast(key, ":")
+	if s.perAppKey > 0 && s.counts[partition] >= s.perAppKey {
+		return false, errAppKeyCapacity
 	}
 	if len(s.items) >= s.capacity {
 		return false, errors.New("auth: nonce capacity exhausted")
 	}
 	s.items[key] = expiresAt
+	if s.perAppKey > 0 {
+		s.counts[partition]++
+	}
 	heap.Push(&s.expiry, expiryEntry{key: key, at: expiresAt})
 	return true, nil
 }

@@ -3,6 +3,9 @@ package breaker_test
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -11,6 +14,7 @@ import (
 
 	resilience "github.com/gtkit/gsrv/internal/pkg/breaker"
 	"github.com/gtkit/gsrv/internal/pkg/fault"
+	"github.com/gtkit/gsrv/internal/pkg/logging"
 	request "github.com/gtkit/gsrv/internal/pkg/requestid"
 )
 
@@ -36,6 +40,33 @@ func TestBreakerOpensAndRecovers(t *testing.T) {
 		}
 		if breaker.State() != gobreaker.StateClosed {
 			t.Fatal("recovery failed")
+		}
+	})
+}
+
+func TestBreakerMetricsCurrentState(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		m, _ := logging.NewMetrics("test")
+		b, err := resilience.New[string](resilience.Config{Name: "upstream", Metrics: m, MinRequests: 1, OpenTimeout: time.Second})
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertState := func(want int) {
+			r := httptest.NewRecorder()
+			m.ServeHTTP(r, httptest.NewRequest("GET", "/metrics", nil))
+			if !strings.Contains(r.Body.String(), fmt.Sprintf("gsrv_breaker_state{service=\"test\",dependency=\"upstream\"} %d\n", want)) {
+				t.Fatal("breaker gauge mismatch")
+			}
+		}
+		assertState(0)
+		_, _ = b.Execute(t.Context(), func(context.Context) (string, error) { return "", errors.New("down") })
+		assertState(2)
+		synctest.Sleep(2 * time.Second)
+		assertState(1)
+		_, _ = b.Execute(t.Context(), func(context.Context) (string, error) { return "ok", nil })
+		assertState(0)
+		if _, err := resilience.New[string](resilience.Config{Name: "upstream", Metrics: m}); err == nil {
+			t.Fatal("duplicate metric accepted")
 		}
 	})
 }

@@ -21,6 +21,7 @@ import (
 	"github.com/gtkit/gsrv/internal/pkg/health"
 	"github.com/gtkit/gsrv/internal/pkg/interceptor"
 	"github.com/gtkit/gsrv/internal/pkg/limiter"
+	"github.com/gtkit/gsrv/internal/pkg/logging"
 )
 
 // 私有 gateway metadata 名称与 interceptor 保持一致。
@@ -43,6 +44,7 @@ type Config struct {
 	MaxRecvBytes         int           `yaml:"max_recv_bytes"`         // 入站消息上限；0=1MiB；必须为正。
 	MaxSendBytes         int           `yaml:"max_send_bytes"`         // 出站消息上限；0=1MiB；必须为正。
 	MaxConcurrentStreams uint32        `yaml:"max_concurrent_streams"` // 每连接并行流数；0=100；并非逐消息 QPS。
+	MaxInflight          int           `yaml:"max_inflight"`           // 本公开server跨连接unary/stream合计并发；0=100，必须为正；健康与私有gateway跳过。
 	Reflection           bool          `yaml:"reflection"`             // 是否注册反射；默认 false；开启后仍执行 stream 认证。
 }
 
@@ -52,6 +54,7 @@ type options struct {
 	state         *health.State
 	validate      func(proto.Message) error
 	trusted       bool
+	metrics       *logging.Metrics
 }
 
 // Option 配置协议治理组件。
@@ -69,9 +72,13 @@ func WithHealth(s *health.State) Option { return func(o *options) { o.state = s 
 // WithValidation 注入 protovalidate.Validate；unary 和 stream RecvMsg 均校验。
 func WithValidation(v func(proto.Message) error) Option { return func(o *options) { o.validate = v } }
 
+// WithMetrics 注入外部业务请求指标；nil关闭，私有gateway不重复记录。
+func WithMetrics(m *logging.Metrics) Option { return func(o *options) { o.metrics = m } }
+
 // Server 实现 gsrv.Server，不依赖任何业务模块。
 type Server struct {
 	server   *grpc.Server
+	state    *health.State
 	cfg      Config
 	mu       sync.RWMutex
 	listener net.Listener
@@ -110,11 +117,18 @@ func build(service string, cfg Config, trusted bool, opts ...Option) (*Server, e
 	if cfg.MaxConcurrentStreams == 0 {
 		cfg.MaxConcurrentStreams = 100
 	}
+	if cfg.MaxInflight == 0 {
+		cfg.MaxInflight = 100
+	}
+	gate, err := limiter.NewInflight(cfg.MaxInflight)
+	if err != nil {
+		return nil, err
+	}
 	o := options{state: health.New(), trusted: trusted}
 	for _, option := range opts {
 		option(&o)
 	}
-	if !auth.ValidName(service) || cfg.Addr == "" || o.state == nil || cfg.RequestTimeout <= 0 || cfg.MaxRecvBytes <= 0 || cfg.MaxSendBytes <= 0 ||
+	if !auth.ValidName(service) || cfg.Addr == "" || o.state == nil || o.state.GRPC() == nil || cfg.RequestTimeout <= 0 || cfg.MaxRecvBytes <= 0 || cfg.MaxSendBytes <= 0 ||
 		(!trusted && o.authenticator == nil) || (cfg.Network != "tcp" && cfg.Network != "unix") {
 		return nil, errors.New("grpc: invalid service, auth, health or limits")
 	}
@@ -139,15 +153,18 @@ func build(service string, cfg Config, trusted bool, opts ...Option) (*Server, e
 		}
 		serverOpts = append(serverOpts, grpc.Creds(tlsCredentials))
 	}
-	governance := interceptor.Config{RequestTimeout: cfg.RequestTimeout, Authenticator: o.authenticator, Limiter: o.quota, Validate: o.validate, Trusted: o.trusted}
+	governance := interceptor.Config{RequestTimeout: cfg.RequestTimeout, Authenticator: o.authenticator, Limiter: o.quota, Validate: o.validate, Trusted: o.trusted, Inflight: gate, Metrics: o.metrics}
 	serverOpts = append(serverOpts, grpc.ChainUnaryInterceptor(interceptor.Unary(service, governance)), grpc.ChainStreamInterceptor(interceptor.Stream(service, governance)))
 	server := grpc.NewServer(serverOpts...)
 	healthpb.RegisterHealthServer(server, o.state.GRPC())
 	if cfg.Reflection {
 		reflection.Register(server)
 	}
-	return &Server{server: server, cfg: cfg}, nil
+	return &Server{server: server, cfg: cfg, state: o.state}, nil
 }
+
+// HealthState 返回注册的健康状态，供App监听前校验；旧Wrap返回nil。
+func (s *Server) HealthState() *health.State { return s.state }
 
 // Register 将业务生成的注册函数接到框架提供的 ServiceRegistrar；须在 Run 前完成。
 func (s *Server) Register(register func(grpc.ServiceRegistrar)) { register(s.server) }

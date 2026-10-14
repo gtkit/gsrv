@@ -41,6 +41,8 @@ type Config struct {
 	Limiter        limiter.Limiter
 	Validate       func(proto.Message) error
 	Trusted        bool
+	Inflight       *limiter.Inflight
+	Metrics        *logging.Metrics
 }
 
 // Unary 提供 unary 请求治理；默认值由 server 构造阶段校验。
@@ -49,14 +51,13 @@ func Unary(service string, cfg Config) grpc.UnaryServerInterceptor {
 		md, _ := metadata.FromIncomingContext(ctx)
 		scope := request.New(first(md, "x-request-id"))
 		ctx = request.WithScope(ctx, scope)
-		if headerErr := grpc.SetHeader(ctx, metadata.Pairs("x-request-id", scope.ID())); headerErr != nil {
-			return nil, status.Error(codes.Internal, "response metadata failed")
-		}
 		start := time.Now()
 		probe := isHealth(info.FullMethod)
 		defer func() {
 			if !probe && !cfg.Trusted {
-				logging.Access(ctx, service, "grpc", info.FullMethod, status.Code(err).String(), 0, time.Since(start))
+				duration := time.Since(start)
+				logging.Access(ctx, service, "grpc", info.FullMethod, status.Code(err).String(), 0, duration)
+				cfg.Metrics.Observe("grpc", err != nil, duration)
 			}
 		}()
 		defer func() {
@@ -68,6 +69,17 @@ func Unary(service string, cfg Config) grpc.UnaryServerInterceptor {
 		}()
 		callCtx, cancel := context.WithTimeout(ctx, cfg.RequestTimeout)
 		defer cancel()
+		if headerErr := grpc.SetHeader(ctx, metadata.Pairs("x-request-id", scope.ID())); headerErr != nil {
+			return nil, status.Error(codes.Internal, "response metadata failed")
+		}
+		if !probe && !cfg.Trusted && cfg.Inflight != nil {
+			if !cfg.Inflight.Acquire() {
+				cfg.Metrics.Reject("grpc", "inflight")
+				return nil, status.Error(codes.ResourceExhausted, "too many in-flight calls")
+			}
+			cfg.Metrics.Inflight("grpc", 1)
+			defer func() { cfg.Metrics.Inflight("grpc", -1); cfg.Inflight.Release() }()
+		}
 		if !probe {
 			identity, authErr := authenticate(callCtx, md, cfg)
 			if authErr != nil {
@@ -81,11 +93,12 @@ func Unary(service string, cfg Config) grpc.UnaryServerInterceptor {
 					return nil, ToStatus(fault.Wrap(fault.Unavailable, "limiter unavailable", limitErr))
 				}
 				if !allowed {
+					cfg.Metrics.Reject("grpc", "qps")
 					return nil, status.Error(codes.ResourceExhausted, "rate limit exceeded")
 				}
 			}
 		}
-		if cfg.Validate != nil {
+		if !probe && cfg.Validate != nil {
 			if message, ok := req.(proto.Message); ok {
 				if validationErr := cfg.Validate(message); validationErr != nil {
 					return nil, status.Error(codes.InvalidArgument, "invalid request")
@@ -108,7 +121,9 @@ func Stream(service string, cfg Config) grpc.StreamServerInterceptor {
 		probe := isHealth(info.FullMethod)
 		defer func() {
 			if !probe && !cfg.Trusted {
-				logging.Access(ctx, service, "grpc", info.FullMethod, status.Code(err).String(), 0, time.Since(start))
+				duration := time.Since(start)
+				logging.Access(ctx, service, "grpc", info.FullMethod, status.Code(err).String(), 0, duration)
+				cfg.Metrics.Observe("grpc", err != nil, duration)
 			}
 		}()
 		defer func() {
@@ -117,6 +132,14 @@ func Stream(service string, cfg Config) grpc.StreamServerInterceptor {
 				err = status.Error(codes.Internal, "internal server error")
 			}
 		}()
+		if !probe && !cfg.Trusted && cfg.Inflight != nil {
+			if !cfg.Inflight.Acquire() {
+				cfg.Metrics.Reject("grpc", "inflight")
+				return status.Error(codes.ResourceExhausted, "too many in-flight calls")
+			}
+			cfg.Metrics.Inflight("grpc", 1)
+			defer func() { cfg.Metrics.Inflight("grpc", -1); cfg.Inflight.Release() }()
+		}
 		if !probe {
 			identity, authErr := authenticate(ctx, md, cfg)
 			if authErr != nil {
@@ -130,6 +153,7 @@ func Stream(service string, cfg Config) grpc.StreamServerInterceptor {
 					return ToStatus(fault.Wrap(fault.Unavailable, "limiter unavailable", limitErr))
 				}
 				if !allowed {
+					cfg.Metrics.Reject("grpc", "qps")
 					return status.Error(codes.ResourceExhausted, "rate limit exceeded")
 				}
 			}
@@ -137,7 +161,11 @@ func Stream(service string, cfg Config) grpc.StreamServerInterceptor {
 		if err := ss.SetHeader(metadata.Pairs("x-request-id", scope.ID())); err != nil {
 			return status.Error(codes.Internal, "response metadata failed")
 		}
-		return ToStatus(handler(srv, &validatedStream{ServerStream: ss, ctx: ctx, validate: cfg.Validate}))
+		validate := cfg.Validate
+		if probe {
+			validate = nil
+		}
+		return ToStatus(handler(srv, &validatedStream{ServerStream: ss, ctx: ctx, validate: validate}))
 	}
 }
 

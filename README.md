@@ -31,6 +31,10 @@ OCPC 及其媒体 SDK、Redis、任务队列、业务配置和测试已按要求
 
 ## 检查与构建
 
+App 在监听前校验共享健康状态并拒绝 typed-nil server；readiness 读取后台快照。默认 nonce 按 HTTP AppKey 预留份额，单方用满返回429而不挤占其他调用方；`grpc.max_inflight` 默认100，限制跨连接 unary/stream 合计并发，健康和私有 gateway 跳过。
+
+`metrics.enabled` 默认关闭，启用要求 HTTP；本机直连 `GET /metrics` 可读取最小指标，不使用 AppKey、请求ID或原始URL标签。配置示例、独立模板和根设计文档同步定义默认值及边界。
+
 ```sh
 GOWORK=off make check        # 根服务与独立模板：build、lint、vet、race、现代语法、架构、buf lint
 make gen                    # 改 proto 后重新生成 pb；禁止手改产物

@@ -47,13 +47,26 @@ type Config struct {
 // Server 实现 gsrv.Server，包装阶段不绑定端口。
 type Server struct {
 	server   *http.Server
+	state    *health.State
 	cfg      Config
 	mu       sync.RWMutex
 	listener net.Listener
 }
 
+type options struct{ metrics *logging.Metrics }
+
+// Option 配置HTTP公共观测装配。
+type Option func(*options)
+
+// WithMetrics 注入指标并启用仅直连loopback来源的GET /metrics；nil不启用。
+func WithMetrics(m *logging.Metrics) Option { return func(o *options) { o.metrics = m } }
+
 // New 组合探针和受保护 handler；业务 handler/authenticator 均须非 nil。
-func New(service string, cfg Config, handler http.Handler, authenticator Authenticator, quota limiter.Limiter, state *health.State) (*Server, error) {
+func New(service string, cfg Config, handler http.Handler, authenticator Authenticator, quota limiter.Limiter, state *health.State, opts ...Option) (*Server, error) {
+	var o options
+	for _, option := range opts {
+		option(&o)
+	}
 	if cfg.Addr == "" {
 		cfg.Addr = "127.0.0.1:8080"
 	}
@@ -78,7 +91,7 @@ func New(service string, cfg Config, handler http.Handler, authenticator Authent
 	if cfg.MaxInflight == 0 {
 		cfg.MaxInflight = 100
 	}
-	if !auth.ValidName(service) || handler == nil || authenticator == nil || state == nil || cfg.ReadHeaderTimeout <= 0 ||
+	if !auth.ValidName(service) || handler == nil || authenticator == nil || state == nil || state.GRPC() == nil || cfg.ReadHeaderTimeout <= 0 ||
 		cfg.ReadTimeout <= 0 || cfg.WriteTimeout < cfg.RequestTimeout || cfg.IdleTimeout <= 0 || cfg.RequestTimeout <= 0 || cfg.MaxBodyBytes <= 0 || cfg.MaxInflight <= 0 {
 		return nil, errors.New("http: invalid service, handlers or limits")
 	}
@@ -105,7 +118,9 @@ func New(service string, cfg Config, handler http.Handler, authenticator Authent
 			if operation == "" {
 				operation = r.Method + " " + r.URL.EscapedPath()
 			}
-			logging.Access(ctx, service, "http", operation, record.code, record.status, time.Since(start))
+			duration := time.Since(start)
+			logging.Access(ctx, service, "http", operation, record.code, record.status, duration)
+			o.metrics.Observe("http", record.status >= 400 || record.code != string(fault.OK), duration)
 		}()
 		defer func() {
 			if recover() != nil {
@@ -119,8 +134,10 @@ func New(service string, cfg Config, handler http.Handler, authenticator Authent
 		}()
 		select {
 		case slots <- struct{}{}:
-			defer func() { <-slots }()
+			o.metrics.Inflight("http", 1)
+			defer func() { o.metrics.Inflight("http", -1); <-slots }()
 		default:
+			o.metrics.Reject("http", "inflight")
 			WriteError(record, r, fault.New(fault.ResourceExhausted, "too many in-flight requests"))
 			return
 		}
@@ -145,6 +162,7 @@ func New(service string, cfg Config, handler http.Handler, authenticator Authent
 				return
 			}
 			if !allowed {
+				o.metrics.Reject("http", "qps")
 				record.Header().Set("Retry-After", "1")
 				WriteError(record, r, fault.New(fault.ResourceExhausted, "rate limit exceeded"))
 				return
@@ -157,6 +175,16 @@ func New(service string, cfg Config, handler http.Handler, authenticator Authent
 	})
 	probes := state.Handler()
 	router := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if o.metrics != nil && r.Method == http.MethodGet && r.URL.Path == "/metrics" {
+			host, _, err := net.SplitHostPort(r.RemoteAddr)
+			ip := net.ParseIP(host)
+			if err != nil || ip == nil || !ip.IsLoopback() {
+				WriteError(w, r, fault.New(fault.PermissionDenied, "metrics require a direct loopback peer"))
+				return
+			}
+			o.metrics.ServeHTTP(w, r)
+			return
+		}
 		if r.Method == http.MethodGet && (r.URL.Path == "/livez" || r.URL.Path == "/readyz") {
 			probes.ServeHTTP(w, r)
 			return
@@ -172,8 +200,11 @@ func New(service string, cfg Config, handler http.Handler, authenticator Authent
 		}
 		server.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{certificate}}
 	}
-	return &Server{server: server, cfg: cfg}, nil
+	return &Server{server: server, cfg: cfg, state: state}, nil
 }
+
+// HealthState 返回共享探针状态，供App监听前校验；旧Wrap返回nil。
+func (s *Server) HealthState() *health.State { return s.state }
 
 // Wrap 将已有 HTTP server 接入公共生命周期；鉴权和限制由已有装配方负责。
 func Wrap(server *http.Server) *Server { return &Server{server: server} }

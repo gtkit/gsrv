@@ -15,13 +15,5 @@ config/env/*.yml
 go.work
 go.work.sum
 .proto-deps/
-# 本地 harness/agent 元数据沿用原忽略范围；交付文档与 OpenSpec 必须入库。
+# 本地 harness/agent 元数据沿用原忽略范围。
 *.md
-!README.md
-!AGENTS.md
-!GSRV_DESIGN.md
-!CHANGELOG.md
-!templates/service/README.md
-!openspec/
-!openspec/**/
-!openspec/**/*.md

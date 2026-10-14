@@ -12,6 +12,7 @@ import (
 	"github.com/sony/gobreaker/v2"
 
 	"github.com/gtkit/gsrv/internal/pkg/fault"
+	"github.com/gtkit/gsrv/internal/pkg/logging"
 	request "github.com/gtkit/gsrv/internal/pkg/requestid"
 )
 
@@ -26,6 +27,7 @@ type Config struct {
 	HalfOpenRequests uint32           // 半开状态的并行探测请求上限；0=1。
 	IsSuccessful     func(error) bool // 下游成功分类；nil 使用 gobreaker 默认 err==nil，由业务解释领域错误。
 	IsExcluded       func(error) bool // 额外排除样本分类；nil 无额外排除，取消/鉴权/参数错误始终排除。
+	Metrics          *logging.Metrics // nil不导出状态；启用时Name为固定安全名称，唯一且最多64个依赖。
 }
 
 // Breaker 包装一个指定下游的熔断状态。
@@ -70,7 +72,13 @@ func New[T any](cfg Config) (*Breaker[T], error) {
 		OnStateChange: func(name string, from, to gobreaker.State) {
 			logger.Warnw("breaker state changed", "dependency", name, "from", from.String(), "to", to.String())
 		}}
-	return &Breaker[T]{breaker: gobreaker.NewCircuitBreaker[T](settings)}, nil
+	b := &Breaker[T]{breaker: gobreaker.NewCircuitBreaker[T](settings)}
+	if cfg.Metrics != nil {
+		if err := cfg.Metrics.RegisterBreaker(cfg.Name, func() int { return int(b.State()) }); err != nil {
+			return nil, err
+		}
+	}
+	return b, nil
 }
 
 // Execute 执行合作式可取消调用；不自动重试或降级。

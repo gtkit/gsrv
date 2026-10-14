@@ -28,8 +28,8 @@ internal/
     interceptor/                    unary/stream 治理链、错误映射
     requestid/                      request ID、认证身份记录与降级标记
     auth/                           HMAC、token 和 nonce 原子消费
-    limiter/                        gtkit/golimit 适配
-    logging/                        gtkit/logger/v2 装配和访问日志
+    limiter/                        gtkit/golimit 适配、共享并发 gate
+    logging/                        gtkit/logger/v2、访问日志和最小指标
     breaker/                        gobreaker/v2、httpc、降级执行钩子
     health/                         共享就绪状态与依赖检查
     lifecycle/                      Listen/Serve/Shutdown/Close 与信号
@@ -101,12 +101,12 @@ flowchart TD
   A[main 解析 config 路径] --> B[platform/config.Load 严格解析与默认值]
   B --> C[环境变量解析凭据 缺失即失败]
   C --> D[bootstrap/logging 初始化 logger/v2]
-  D --> E[创建 verifier 一个共享 limiter 一个 health.State]
+  D --> E[创建分区 nonce 的 verifier 共享 limiter 一个 health.State 可选指标]
   E --> F[runtime/module/info.Build → application]
   F --> G[transport/grpc.NewHandler]
   G --> H[bootstrap/grpc 注册公开 gRPC 与可选私有 backend]
   H --> I[bootstrap/gateway 构造 HTTP 与 gateway 连接]
-  I --> J[bootstrap/serve 创建 App]
+  I --> J[bootstrap/serve 创建 App 校验共享健康状态]
   J --> K[绑定全部 listener → Start hooks]
   K --> L[启动 Serve → readiness 探测与监视]
   L --> M[等待信号或任一 Serve 异常]
@@ -156,7 +156,7 @@ sequenceDiagram
   participant P as protovalidate
   participant A as handler/application
   C->>G: x-app-key + Bearer token + 可选 request ID
-  G->>G: 请求记录 / deferred日志 / recovery / unary预算
+  G->>G: 请求记录 / deferred日志与指标 / recovery / 共享并发 gate / unary预算
   G->>V: token 与 AppKey 绑定校验
   V-->>G: 已认证 Identity
   G->>L: Allow(ctx, AppKey)
@@ -168,7 +168,7 @@ sequenceDiagram
   G->>G: duration_ms / app_key / error_code / grpc_code
 ```
 
-stream 建连时认证与限流一次，每次 RecvMsg 校验；每连接并行 stream 上限独立生效。它不是逐消息 QPS 限流，也不把 unary 的 3s 自动施加到长期流；业务长连接的消息额度、最大生命周期与背压须单独设计。
+stream 建连时认证与限流一次，每次 RecvMsg 校验。grpc.max_inflight 默认100，是每个公开 server 跨连接的 unary/stream 合计并发，stream 持有至结束；满时立即 ResourceExhausted，所有已获槽位的退出路径释放。max_concurrent_streams 仍是每连接限制。健康检查不走业务鉴权、QPS、并发和参数校验，私有 gateway 不重复消耗并发或指标。长期流不强制套用 unary 的3s预算；消息额度与背压由服务按实际场景设计。
 
 ### proto HTTP gateway
 
@@ -218,7 +218,9 @@ SHA256(原始 body) 的小写十六进制
 
 使用 `gsrv.SignHTTP(request, serviceName, credential, time.Now(), rand.Text())` 生成签名。每次重试用新 nonce；它不自动重试。按最终发往服务的 URI 签名，代理不得静默改写 path/query/content type/body。helper 限定 body 为 1MiB；大文件宜独立设计分片/对象存储直传与上传凭证，不将无限大内容读入内存。
 
-内存 nonce store 默认容量 100000，不淘汰仍有效 nonce；满容量拒绝认证并返回 503。时间窗内同 AppKey 的 KeyID 轮换共享 nonce 域。单实例重启会丢失已消费记录；多副本也不会共享。需要跨重启/副本防重放时实现原子 `NonceStore.Use`，例如服务自身装配 redisx + 原子 SET NX TTL；本轮不引入无场景 Redis。
+默认 verifier 的 nonce_capacity=100000，nonce_capacity_per_app_key=0 按不同 HTTP AppKey 向下均分。正份额不得超过均分值，KeyID 轮换共用份额；不足以给每方至少一项时启动报错。单方满时429，其他 AppKey 仍可消费自身份额；普通存储/全局故障503，取消/超时按统一错误契约映射。只回收到期项，不驱逐有效nonce。合法签名在QPS判断前消费nonce，后续429仍保留记录防重放。
+
+只有带HTTP secret的AppKey参加分配。自定义NonceStore负责自身原子去重、有效期和等价隔离；显式注入原始NewMemoryNonceStore(capacity)只有全局容量，不自动得到默认verifier的预留策略。nil/零值MemoryNonceStore在构造时拒绝。内存不跨重启/副本共享，本轮不引入Redis。默认前后30s窗口的最长保留约61s，容量按实际签名QPS乘最大保留时间并留余量；等份隔离可能留有空闲容量。
 
 gRPC 使用绑定 AppKey 的 token 与 TLS；不对 protobuf 重新序列化后做同一 HTTP body 签名，以免出现规范化差异。token 可以按同 AppKey 多 KeyID 并行配置进行轮换；QPS 仍按 AppKey 汇总。
 
@@ -247,8 +249,8 @@ stateDiagram-v2
   Stopped --> [*]
 ```
 
-1. 绑定全部监听，开始后台组件；启动期间 ready=false。
-2. 启动 Serve，执行关键依赖探测，监视器每 1s 同步标准 gRPC Health。
+1. App在构造时采用未显式指定的server HealthState，或校验显式状态与全部健康感知server一致；错配、nil/typed-nil server和未初始化状态在监听前报错。旧Wrap/自定义server未提供状态时仍由装配方负责。随后绑定监听和启动组件，ready=false。
+2. 启动Serve，首次Refresh后托管每1s背景刷新；两协议读取同一快照。无检查时可直接就绪，有检查时首次探测前未就绪。
 3. 收到关闭请求，立即 ready=false，取消监视器。
 4. 从未取消的上下文创建**一个总关闭预算**，默认 20s。依注册顺序 HTTP → 公开 gRPC → 私有 gRPC，先让 HTTP 在途 gateway 调用完成。
 5. HTTP Shutdown 超时强制 Close；gRPC GracefulStop 超时 Stop 并等待返回。
@@ -257,7 +259,7 @@ stateDiagram-v2
 
 Start 在启动期须可取消并及时返回，Stop/Check/业务调用都必须遵守 ctx。Go 不能安全强杀不配合的任意业务函数；骨架不会为超时另起不受控 goroutine。App 不可并发/重复运行，需重新构造。致命错误在 main 收到清理后的返回值才记录，禁止 Serve goroutine 调 Fatal。
 
-`/livez` 仅表示进程存活，不探测依赖。`/readyz` 看生命周期与关键依赖；每个 Check 上限 1s，失败不暴露依赖详情。gRPC Health 使用整体空服务名状态；依赖变化通过监视器同步。启动无强制 DB/Redis 探测，无依赖的 InfoService 可直接 ready。
+/livez仅表示存活；/readyz与gRPC Health整体空服务名只读同一缓存，不按请求重复探测。每项Check的ctx上限1s，必须合作式取消；快照有调度与探测耗时的延迟。激活后禁止AddCheck，重复SetReady(true)保留已有快照。关闭立即false，生命周期版本阻止旧探测覆盖重新激活后的状态；探测panic被恢复并发布未就绪。Refresh的串行等待可被ctx取消，不起无法回收的超时goroutine。手工使用关键Check时先Refresh再托管Monitor，App已自动执行。
 
 ## 9. 配置与日志核对
 
@@ -277,19 +279,38 @@ Start 在启动期须可取消并及时返回，Stop/Check/业务调用都必须
 | grpc.request_timeout | 3s | unary 预算，不施加到长期 stream |
 | grpc.max_recv_bytes/max_send_bytes | 1MiB/1MiB | 正值，双向消息大小限制 |
 | grpc.max_concurrent_streams | 100 | 每连接上限，非全进程/逐消息限流 |
+| grpc.max_inflight | 0/缺省=100 | 正值，公开server跨连接unary/stream总并发，健康/私有backend跳过 |
 | grpc.reflection | false | 调试服务，启用后仍走 stream 鉴权 |
 | gateway_socket | 空关闭 | 非空要求 HTTP；私有父目录，路径相对 cwd |
 | rate_limit_qps | 0 关闭 | 非负，每 AppKey 双协议合计本地配额 |
+| auth.nonce_capacity | 0/缺省=100000 | 正值，全局有效nonce容量，不少于不同HTTP AppKey数 |
+| auth.nonce_capacity_per_app_key | 0 自动均分 | 非负，正值不超过均分值，KeyID轮换共用 |
+| metrics.enabled | false | 启用要求HTTP，GET /metrics仅直连loopback可读取 |
 | keys.app_key/key_id | 必填 | 安全标识，同 AppKey/KeyID 不重复 |
 | keys.secret_env/token_env | 无默认 | HTTP/公开gRPC 启用时相应必填，环境值至少32字节 |
 | log.level/json | info/false | level 为 debug/info/warn/error；生产示例 JSON=true |
 | log.path/console | 空/true | 文件路径空关闭文件；不可关闭所有输出 |
 
-通用 AuthConfig 的时间窗、nonce 容量，以及 breaker 参数由显式代码装配设置；模板不为尚无场景的能力加入配置开关。
+AuthConfig的时间窗及breaker参数仍由代码显式装配；nonce容量、gRPC总并发及最小指标已同步到根服务/独立模板配置。
 
 访问日志固定字段：`request_id`、`service`、`protocol`、`operation`、`duration_ms`、`app_key`、`error_code`、`degraded`，另带 `http_status` 或 `grpc_code`。error_code 统一大写下划线；grpc_code 保留协议原名。尚未认证时 app_key 为空，不信任伪造头。HTTP operation 优先 handler 路由 Pattern，缺失时记录 method+escaped path，不记录 query/body/token/secret/签名；不要在业务 URI path 中放凭据。日志使用 logger/v2 的上下文字段与显式 console 配置；配置非法/目录不可写在启动期报错。panic、配额拒绝、鉴权失败都输出最终访问记录；健康探针和私有 gateway backend 不重复记录。
 
 ## 10. 独立服务开发与 Linux 部署
+
+指标通过现有 `internal/pkg/logging` 实现、根包导出，使用标准库输出 Prometheus 0.0.4，无新依赖、全局注册器或后台任务。HTTP/gRPC 注入同一个 Metrics；nonce 占用绑定 verifier.NonceStats；下游breaker通过 BreakerConfig.Metrics 注册固定安全且唯一名称，最多64项。InfoService无下游，不创建虚构熔断器。
+
+| 指标 | 类型/含义 | 有界标签 |
+|---|---|---|
+| gsrv_requests_total / gsrv_errors_total | 完成请求/错误计数 | service、protocol=http/grpc |
+| gsrv_request_duration_seconds | 固定桶耗时，秒；stream为整个调用 | service、protocol、le |
+| gsrv_inflight | 已获并发槽位的调用数 | service、protocol |
+| gsrv_limiter_rejections_total | QPS/并发保护拒绝计数 | service、protocol、reason=qps/inflight |
+| gsrv_nonce_entries / gsrv_nonce_capacity | 尚未到期总占用/全局容量 | service；非内存自定义存储不冒充零占用 |
+| gsrv_breaker_state | 0=closed、1=half-open、2=open | service、装配的固定dependency |
+
+耗时桶为0.005/0.01/0.025/0.05/0.1/0.25/0.5/1/2.5/5/10/+Inf。统计范围是进入HTTP治理handler或gRPC interceptor的调用；gRPC之前的连接、解码、未知方法错误不计入。健康、抓取及私有gateway不重复计数，长stream与unary在grpc协议桶中汇总。
+
+metrics.enabled缺省false；启用时HTTP保留GET /metrics，只允许RemoteAddr的IPv4/IPv6 loopback来源，忽略转发头，远端403。抓取绕过业务签名/nonce/QPS/指标。本机采集器可使用静态127.0.0.1:8080目标和15s周期；本机反向代理须限制管理路径的外部转发。gRPC-only服务如需该示例抓取路由，应同时启用HTTP。
 
 根 InfoService 保留当前项目的完整分层，独立模板采用同样结构；新仓库只引用 gsrv 根包公开入口，不导入其 internal。模板的本地 replace 和 v0.0.0 只用于源码验证；正式使用选择真正发布版本，本轮不发布、不打 tag、不升级 gsrv 为 v2。
 
@@ -316,6 +337,12 @@ Linux/amd64 构建：`make build`。systemd 样例在 `templates/service/deploy/
 OpenSpec 按任务记录执行并严格校验，完成后归档合并 spec。回滚是恢复本次源码、配置与依赖，不涉及持久化迁移。交付结果以实际检查日志为准；不可达的外部漏洞库须明确报告，不能将未完成扫描写为通过。
 
 ## 12. 最终验证记录
+
+2026-10-14 复审发现工作区已回到前五项实施前，49项文件被仅从Git索引移除但磁盘仍存在且等于HEAD；.gitignore的交付例外也被移除。本轮备份索引后只撤销暂存删除、恢复例外，没有移动、删除或覆盖未授权文件。不能仅凭status判断取消跟踪/回退的操作者；旧前五项归档正文在当前工作区缺失，仅残留元数据，恢复与复审使用新的review-runtime-protection-regressions变更完整记录。
+
+本轮恢复五项能力并修正边界：typed-nil与未初始化健康/内存nonce存储构造拒绝；重复就绪保留快照；旧生命周期探测不覆盖新周期；探测panic未就绪；等待Refresh可取消；Health跳过业务参数校验；认证/参数失败、错误、panic及真实stream取消均释放并发槽位。
+
+根服务和模板完整make check通过（lint=0 issues、vet/race/现代语法/架构/buf lint）；原目录及依赖锁定版本、proto/pb不变；Linux/amd64与独立复制构建通过。真实CLI仅用本机临时配置/假凭据验证HTTP A=200/429、B=200、探针200、gateway指标只计一次、gRPC GetInfo成功及SIGTERM exit=0。两套govulncheck为0项可达漏洞，既有CEL导入包提示如下。最终Git无暂存删除/文件移动，源码修改与新增文件保留为未提交状态。
 
 - 根服务与独立模板的 `make check`：build、golangci-lint（0 issues）、vet、race、go fix -diff、架构传感器与 buf lint。
 - 根服务/模板 Linux amd64 交叉构建；模板复制到独立临时目录，replace 指向公开模块后编译。

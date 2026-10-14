@@ -13,7 +13,7 @@ import (
 )
 
 // buildHTTPServer 沿用网关装配位置；共享已认证 AppKey、配额及健康状态。
-func buildHTTPServer(cfg *config.Config, state *gsrv.HealthState, verifier *gsrv.Verifier, quota gsrv.RateLimiter) (front *gsrv.HTTPServer, bridge *gsrv.Gateway, err error) {
+func buildHTTPServer(cfg *config.Config, state *gsrv.HealthState, verifier *gsrv.Verifier, quota gsrv.RateLimiter, metrics *gsrv.Metrics) (front *gsrv.HTTPServer, bridge *gsrv.Gateway, err error) {
 	if cfg.HTTP == nil {
 		return nil, nil, nil
 	}
@@ -28,7 +28,7 @@ func buildHTTPServer(cfg *config.Config, state *gsrv.HealthState, verifier *gsrv
 		}
 		handler = bridge
 	}
-	front, err = gsrv.NewHTTPServer(cfg.Name, *cfg.HTTP, handler, verifier, quota, state)
+	front, err = gsrv.NewHTTPServer(cfg.Name, *cfg.HTTP, handler, verifier, quota, state, gsrv.WithHTTPMetrics(metrics))
 	if err != nil {
 		if bridge != nil {
 			err = errors.Join(err, bridge.Close())

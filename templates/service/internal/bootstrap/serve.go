@@ -17,11 +17,12 @@ type servers struct {
 	grpc    *gsrv.GRPCServer
 	backend *gsrv.GRPCServer
 	gateway *gsrv.Gateway
+	metrics *gsrv.Metrics
 }
 
 // buildServers 在原 serve 层级完成协议接线，构造阶段不监听端口。
 func buildServers(cfg *config.Config) (*servers, error) {
-	authCfg := gsrv.AuthConfig{Service: cfg.Name, Credentials: cfg.Credentials}
+	authCfg := gsrv.AuthConfig{Service: cfg.Name, Credentials: cfg.Credentials, NonceCapacity: cfg.Auth.NonceCapacity, NonceCapacityPerAppKey: cfg.Auth.NonceCapacityPerAppKey}
 	if cfg.HTTP != nil {
 		authCfg.MaxBodyBytes = cfg.HTTP.MaxBodyBytes
 	}
@@ -29,16 +30,24 @@ func buildServers(cfg *config.Config) (*servers, error) {
 	if err != nil {
 		return nil, err
 	}
+	var metrics *gsrv.Metrics
+	if cfg.Metrics.Enabled {
+		metrics, err = gsrv.NewMetrics(cfg.Name)
+		if err != nil {
+			return nil, err
+		}
+		metrics.BindNonceStats(verifier.NonceStats)
+	}
 	quota, err := gsrv.NewLocalLimiter(cfg.Name+":"+rand.Text(), cfg.RateLimitQPS)
 	if err != nil {
 		return nil, err
 	}
 	state := gsrv.NewHealth()
-	public, backend, err := buildGRPCServers(cfg, state, verifier, quota)
+	public, backend, err := buildGRPCServers(cfg, state, verifier, quota, metrics)
 	if err != nil {
 		return nil, err
 	}
-	front, bridge, err := buildHTTPServer(cfg, state, verifier, quota)
+	front, bridge, err := buildHTTPServer(cfg, state, verifier, quota, metrics)
 	if err != nil {
 		return nil, err
 	}
@@ -59,7 +68,7 @@ func buildServers(cfg *config.Config) (*servers, error) {
 		}
 		return nil, err
 	}
-	return &servers{app: app, http: front, grpc: public, backend: backend, gateway: bridge}, nil
+	return &servers{app: app, http: front, grpc: public, backend: backend, gateway: bridge, metrics: metrics}, nil
 }
 
 // Serve 托管 SIGINT/SIGTERM；HTTP→公开gRPC→内部gRPC 顺序排空。

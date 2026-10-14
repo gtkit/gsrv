@@ -48,13 +48,14 @@ type Identity struct {
 
 // Config 配置签名校验；默认 Skew=30s、MaxBodyBytes=1MiB、NonceCapacity=100000。
 type Config struct {
-	_             struct{}      // 强制外部使用带键字面量。
-	Service       string        // HMAC 目标服务名；必填，约束同 AppKey，客户端必须签同一名称。
-	Credentials   []Credential  // 调用方可轮换凭据；必填，同 AppKey/KeyID 不得重复，不能空列表关闭鉴权。
-	Skew          time.Duration // HTTP 时间戳前后容差；0=30s，必须为正且不超过 5m。
-	MaxBodyBytes  int64         // HTTP 原始签名 body 上限；0=1MiB，必须为正，与 HTTP server 限额一致。
-	NonceCapacity int           // 内存防重放容量；0=100000，使用默认存储时必须为正，不驱逐仍有效 nonce。
-	Nonces        NonceStore    // 原子消费 nonce 的存储；nil 回落有界本进程内存实现，不跨重启/副本共享。
+	_                      struct{}      // 强制外部使用带键字面量。
+	Service                string        // HMAC 目标服务名；必填，约束同 AppKey，客户端必须签同一名称。
+	Credentials            []Credential  // 调用方可轮换凭据；必填，同 AppKey/KeyID 不得重复，不能空列表关闭鉴权。
+	Skew                   time.Duration // HTTP 时间戳前后容差；0=30s，必须为正且不超过 5m。
+	MaxBodyBytes           int64         // HTTP 原始签名 body 上限；0=1MiB，必须为正，与 HTTP server 限额一致。
+	NonceCapacity          int           // 内存防重放容量；0=100000，使用默认存储时必须为正，不驱逐仍有效 nonce。
+	NonceCapacityPerAppKey int           // 默认存储的每HTTP AppKey预留；0=全局容量/HTTP AppKey数；非负，正值不超过均分值，轮换共享。
+	Nonces                 NonceStore    // 原子消费 nonce 的存储；nil 回落有界本进程内存实现，不跨重启/副本共享。
 }
 
 // Verifier 持有构造时复制的凭据，可供两种协议同时认证。
@@ -77,6 +78,9 @@ func New(cfg Config) (*Verifier, error) {
 	if !ValidName(cfg.Service) || len(cfg.Credentials) == 0 || cfg.Skew <= 0 || cfg.Skew > 5*time.Minute || cfg.MaxBodyBytes <= 0 {
 		return nil, errors.New("auth: invalid service, credentials, skew or body limit")
 	}
+	if store, ok := cfg.Nonces.(*MemoryNonceStore); ok && (store == nil || store.capacity <= 0) {
+		return nil, errors.New("auth: uninitialized memory nonce store")
+	}
 	v := &Verifier{cfg: cfg, credentials: make(map[string]Credential, len(cfg.Credentials))}
 	for _, credential := range cfg.Credentials {
 		if !ValidName(credential.AppKey) || !ValidName(credential.KeyID) ||
@@ -91,10 +95,30 @@ func New(cfg Config) (*Verifier, error) {
 		v.credentials[key] = credential
 	}
 	if v.cfg.Nonces == nil {
+		callers := make(map[string]struct{})
+		for _, credential := range v.credentials {
+			if credential.Secret != "" {
+				callers[credential.AppKey] = struct{}{}
+			}
+		}
+		if cfg.NonceCapacityPerAppKey < 0 || cfg.NonceCapacity < len(callers) {
+			return nil, errors.New("auth: invalid nonce reservation")
+		}
+		perAppKey := cfg.NonceCapacityPerAppKey
+		if len(callers) > 0 {
+			fairShare := cfg.NonceCapacity / len(callers)
+			if perAppKey > fairShare {
+				return nil, errors.New("auth: nonce reservation exceeds global capacity")
+			}
+			if perAppKey == 0 {
+				perAppKey = fairShare
+			}
+		}
 		nonces, err := NewMemoryNonceStore(cfg.NonceCapacity)
 		if err != nil {
 			return nil, err
 		}
+		nonces.perAppKey = perAppKey
 		v.cfg.Nonces = nonces
 	}
 	v.cfg.Credentials = nil // 不保留调用方 slice，避免配置热变更影响认证。
@@ -156,12 +180,24 @@ func (v *Verifier) AuthenticateHTTP(r *http.Request) (Identity, error) {
 	}
 	used, err := v.cfg.Nonces.Use(r.Context(), v.cfg.Service+":"+appKey+":"+nonce, at.Add(v.cfg.Skew+time.Second))
 	if err != nil {
+		if errors.Is(err, errAppKeyCapacity) {
+			return Identity{}, fault.Wrap(fault.ResourceExhausted, "caller nonce capacity exhausted", err)
+		}
 		return Identity{}, fault.Wrap(fault.Unavailable, "authentication store unavailable", err)
 	}
 	if !used {
 		return Identity{}, rejected
 	}
 	return Identity{AppKey: appKey, KeyID: keyID}, nil
+}
+
+// NonceStats 返回内存存储实时占用与容量；其他自定义存储 available=false，不冒充零占用。
+func (v *Verifier) NonceStats() (used, capacity int, available bool) {
+	store, ok := v.cfg.Nonces.(*MemoryNonceStore)
+	if !ok {
+		return 0, 0, false
+	}
+	return store.Usage(), store.capacity, true
 }
 
 // AuthenticateToken 认证绑定 AppKey 的 gRPC Bearer token；轮换凭据不改变 AppKey 配额。

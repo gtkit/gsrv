@@ -23,6 +23,10 @@ proto/info/v1 → pb/info/v1      buf 契约与生成产物
 
 签名 HTTP `GET /v1/service` 和 gRPC `info.v1.InfoService/GetInfo` 返回真实配置的服务名及 request ID。无数据库或 Redis。
 
+模板已同步共享健康装配校验与缓存探测、nonce AppKey 预留份额、gRPC 跨连接总并发。`auth.nonce_capacity` 缺省 100000；`auth.nonce_capacity_per_app_key=0` 自动均分，显式正值不得超过均分值。`grpc.max_inflight` 缺省 100，含 unary/stream，健康及私有 backend 跳过。
+
+`metrics.enabled` 缺省 false，开启要求 HTTP。本机直连 `GET /metrics` 可采集固定协议标签的请求/错误/耗时/在途/拒绝、nonce 占用；远端访问返回 403，转发头不改变判断。私有 gateway 不重复统计；新依赖的熔断器由装配方通过 `gsrv.BreakerConfig{Metrics: metrics}` 显式注册，不在骨架内加入业务降级规则。
+
 ## 复制到独立仓库
 
 复制本目录后，用 `go mod edit -replace=github.com/gtkit/gsrv=/本机/gsrv/绝对路径` 指向源码即可独立编译。正式发布 gsrv 后，选择实际发布版本并删除本地 replace；不要把 `v0.0.0` 当作远端可下载版本。
