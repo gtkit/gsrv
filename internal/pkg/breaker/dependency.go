@@ -105,7 +105,8 @@ func (d *Dependency) Begin(ctx context.Context, protocol, appKey string) (contex
 		ctx = request.WithScope(ctx, request.New(""))
 	}
 	started := time.Now()
-	callCtx, cancel := context.WithTimeout(ctx, d.timeout)
+	budgetCause := errors.New("dependency budget exhausted") // 每次调用独立，避免嵌套Dependency混淆上游/本层超时。
+	callCtx, cancel := context.WithTimeoutCause(ctx, d.timeout, budgetCause)
 	reject := func(err error, reason string) (context.Context, func(error) error, error) {
 		cancel()
 		d.metrics.RejectDependency(d.name, protocol, reason)
@@ -140,7 +141,12 @@ func (d *Dependency) Begin(ctx context.Context, protocol, appKey string) (contex
 				result = callCtx.Err()
 			}
 			if report != nil {
-				report(result)
+				reportErr := result
+				if ctx.Err() != nil && context.Cause(callCtx) != budgetCause {
+					// 上游预算耗尽属于caller终止；返回/日志保留DeadlineExceeded，熔断排除样本。
+					reportErr = errors.Join(result, context.Canceled)
+				}
+				report(reportErr)
 			}
 			d.observe(callCtx, protocol, appKey, result, time.Since(started))
 		})

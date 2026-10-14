@@ -184,3 +184,68 @@ func TestDependencyInvalidAndDeadline(t *testing.T) {
 		}
 	}
 }
+
+func TestDependencyAttributesBudgetToCallerOrDownstream(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		caller, timeout time.Duration
+		finishDelay     time.Duration
+		state           gobreaker.State
+	}{{"caller", time.Second, 2 * time.Second, 0, gobreaker.StateClosed}, {"downstream", 2 * time.Second, time.Second, 0, gobreaker.StateOpen}, {"downstream-finish-after-caller", 2 * time.Second, time.Second, 2 * time.Second, gobreaker.StateOpen}} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				d, err := NewDependency("peer", DependencyConfig{Timeout: tc.timeout, MaxInflight: 1, CircuitBreaker: true, Breaker: Config{MinRequests: 1}}, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				ctx, cancel := context.WithTimeout(t.Context(), tc.caller)
+				defer cancel()
+				callCtx, finish, err := d.Begin(ctx, "grpc", "service-a")
+				if err != nil {
+					t.Fatal(err)
+				}
+				<-callCtx.Done()
+				if tc.finishDelay > 0 {
+					synctest.Sleep(tc.finishDelay)
+				}
+				if err := finish(nil); !errors.Is(err, context.DeadlineExceeded) {
+					t.Fatalf("budget result=%v", err)
+				}
+				if got := d.breaker.State(); got != tc.state {
+					t.Fatalf("budget attributed incorrectly: got=%s want=%s", got, tc.state)
+				}
+			})
+		})
+	}
+}
+
+func TestNestedDependenciesAttributeInheritedBudgetToParent(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		parent, err := NewDependency("parent", DependencyConfig{Timeout: time.Second, CircuitBreaker: true, Breaker: Config{MinRequests: 1}}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		child, err := NewDependency("child", DependencyConfig{Timeout: 2 * time.Second, CircuitBreaker: true, Breaker: Config{MinRequests: 1}}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx, finishParent, err := parent.Begin(t.Context(), "http", "service-a")
+		if err != nil {
+			t.Fatal(err)
+		}
+		callCtx, finishChild, err := child.Begin(ctx, "grpc", "service-a")
+		if err != nil {
+			t.Fatal(err)
+		}
+		<-callCtx.Done()
+		if err := finishChild(nil); !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("child budget=%v", err)
+		}
+		if err := finishParent(nil); !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("parent budget=%v", err)
+		}
+		if parent.breaker.State() != gobreaker.StateOpen || child.breaker.State() != gobreaker.StateClosed {
+			t.Fatal("inherited budget opened the child breaker or failed to open the parent")
+		}
+	})
+}

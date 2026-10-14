@@ -17,7 +17,7 @@ type Key struct {
 	AppKey    string `yaml:"app_key"`    // 调用服务公开标识；必填，1–64 位字母/数字/点/下划线/短横线。
 	KeyID     string `yaml:"key_id"`     // 密钥轮换标识；必填，同一 AppKey 内唯一，字符约束同 app_key。
 	SecretEnv string `yaml:"secret_env"` // HMAC secret 环境变量名称；HTTP 启用时必填，变量值至少 32 字节。
-	TokenEnv  string `yaml:"token_env"`  // gRPC token 环境变量名称；公开 gRPC 启用时必填，变量值至少 32 字节。
+	TokenEnv  string `yaml:"token_env"`  // gRPC token 环境变量名称；公开gRPC启用时必填，变量值32–4096字节，与认证器一致。
 }
 
 // Auth 配置默认内存防重放容量；仅影响 HTTP 签名 nonce，不保存凭据。
@@ -88,6 +88,9 @@ func Load(path string) (*Config, error) {
 			value, err := gsrv.SecretFromEnv(key.TokenEnv)
 			if err != nil {
 				return nil, err
+			}
+			if len(value) < 32 || len(value) > 4096 {
+				return nil, errors.New("keys: gRPC token must contain 32 to 4096 bytes")
 			}
 			credential.Token = value
 		}

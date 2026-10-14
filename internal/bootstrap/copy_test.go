@@ -72,7 +72,7 @@ func TestCopyCheckWildcardAndSocketConflicts(t *testing.T) {
 	for _, tc := range []struct {
 		left, right string
 		conflict    bool
-	}{{"0.0.0.0:8080", "127.0.0.1:8080", true}, {"localhost:8080", "127.0.0.1:8080", true}, {"[::]:8080", "127.0.0.1:8080", true}, {"127.0.0.1:8080", "127.0.0.1:8081", false}, {"127.0.0.1:8080", "127.0.0.2:8080", false}} {
+	}{{"0.0.0.0:8080", "127.0.0.1:8080", true}, {"localhost:8080", "127.0.0.1:8080", true}, {"[::]:8080", "127.0.0.1:8080", true}, {"127.0.0.1:8080", "127.0.0.1:8081", false}, {"127.0.0.1:8080", "127.0.0.2:8080", false}, {"127.0.0.1:08080", "127.0.0.1:8080", true}, {"[::1]:8080", "[0:0:0:0:0:0:0:1]:8080", true}, {"[::ffff:127.0.0.1]:8080", "127.0.0.1:8080", true}} {
 		if listenersConflict(tc.left, tc.right) != tc.conflict {
 			t.Fatalf("conflict differs for %s/%s", tc.left, tc.right)
 		}

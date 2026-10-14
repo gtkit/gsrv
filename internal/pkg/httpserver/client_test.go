@@ -14,6 +14,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/gtkit/gsrv/internal/pkg/auth"
 	"github.com/gtkit/gsrv/internal/pkg/breaker"
@@ -203,5 +204,123 @@ func TestHTTPClientTLSAndConfiguration(t *testing.T) {
 		if _, err := cfg.Normalize(); err == nil {
 			t.Fatalf("accepted invalid config %+v", cfg)
 		}
+	}
+}
+
+func TestHTTPClientNormalizesSignedHeaderAndDropsProxyIdentity(t *testing.T) {
+	credential := clientCredential()
+	verifier, err := auth.New(auth.Config{Service: "peer", Credentials: []auth.Credential{credential}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		identity, err := verifier.AuthenticateHTTP(r)
+		if err != nil || identity.AppKey != credential.AppKey || r.Header.Get("Content-Type") != "application/json" || r.Header.Get("Proxy-Authorization") != "" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		_, _ = io.WriteString(w, "ok")
+	}))
+	t.Cleanup(server.Close)
+	client, err := NewClient(ClientConfig{Service: "peer", BaseURL: server.URL}, credential, httpDependency(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	headers := http.Header{"cOnTeNt-TyPe": {" \tapplication/json\t "}, "pRoXy-AuThOrIzAtIoN": {"Basic inbound-private"}, "X-aPp-KeY": {"caller-b"}, "X-Signature-Nonce": {"caller-nonce"}}
+	before := headers.Clone()
+	if _, err := client.Do(t.Context(), http.MethodPost, "/", []byte("{}"), headers); err != nil {
+		t.Fatal(err)
+	}
+	if !maps.EqualFunc(before, headers, slices.Equal) {
+		t.Fatal("normalization mutated caller headers")
+	}
+}
+
+func TestHTTPClientDoesNotReplayConsumedSignatureAfterDisconnect(t *testing.T) {
+	for _, tc := range []struct {
+		method string
+		body   []byte
+		header http.Header
+	}{{http.MethodGet, nil, nil}, {http.MethodPost, []byte("{}"), http.Header{"Idempotency-Key": {"explicit-key"}}}} {
+		t.Run(tc.method, func(t *testing.T) {
+			var dropped atomic.Int32
+			credential := clientCredential()
+			verifier, err := auth.New(auth.Config{Service: "peer", Credentials: []auth.Credential{credential}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/warmup" {
+					_, _ = io.WriteString(w, "ok")
+					return
+				}
+				dropped.Add(1)
+				if _, err := verifier.AuthenticateHTTP(r); err != nil {
+					t.Error(err)
+				}
+				_, _ = io.Copy(io.Discard, r.Body)
+				conn, _, err := w.(http.Hijacker).Hijack()
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				_ = conn.Close() // 已读完整请求，故意在响应前断连。
+			}))
+			t.Cleanup(server.Close)
+			client, err := NewClient(ClientConfig{Service: "peer", BaseURL: server.URL}, credential, httpDependency(t))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = client.Close() })
+			if _, err := client.Do(t.Context(), http.MethodGet, "/warmup", nil, nil); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := client.Do(t.Context(), tc.method, "/drop", tc.body, tc.header); fault.CodeOf(err) != fault.Unavailable || dropped.Load() != 1 {
+				t.Fatalf("ambiguous disconnect: code=%s attempts=%d", fault.CodeOf(err), dropped.Load())
+			}
+		})
+	}
+}
+
+func TestHTTPClientBudgetCoversResponseBody(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		caller, timeout time.Duration
+	}{{"caller", 200 * time.Millisecond, 5 * time.Second}, {"dependency", 5 * time.Second, 200 * time.Millisecond}} {
+		t.Run(tc.name, func(t *testing.T) {
+			entered := make(chan struct{})
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusOK)
+				w.(http.Flusher).Flush()
+				close(entered)
+				<-r.Context().Done()
+			}))
+			t.Cleanup(server.Close)
+			d, err := breaker.NewDependency("peer", breaker.DependencyConfig{Timeout: tc.timeout, MaxInflight: 1}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			client, err := NewClient(ClientConfig{Service: "peer", BaseURL: server.URL}, clientCredential(), d)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = client.Close() })
+			ctx, cancel := context.WithTimeout(t.Context(), tc.caller)
+			defer cancel()
+			start := time.Now()
+			result, err := client.Do(ctx, http.MethodGet, "/", nil, nil)
+			if fault.CodeOf(err) != fault.DeadlineExceeded || result == nil || result.StatusCode != http.StatusOK || time.Since(start) > 2*time.Second {
+				t.Fatalf("response-body budget: result=%+v code=%s duration=%s", result, fault.CodeOf(err), time.Since(start))
+			}
+			<-entered
+			_, finish, err := d.Begin(t.Context(), "grpc", "service-a")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := finish(nil); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }

@@ -159,7 +159,7 @@ func (c *Client) Do(ctx context.Context, method, path string, body []byte, heade
 	r.Header = make(http.Header)
 	for key, values := range headers {
 		lower := strings.ToLower(key)
-		if lower == "authorization" || lower == "cookie" || lower == "x-app-key" || lower == "x-key-id" || lower == "x-request-id" || strings.HasPrefix(lower, "x-signature") || strings.HasPrefix(lower, "grpc-metadata-") || strings.HasPrefix(lower, "x-gsrv-") {
+		if lower == "authorization" || lower == "proxy-authorization" || lower == "cookie" || lower == "x-app-key" || lower == "x-key-id" || lower == "x-request-id" || strings.HasPrefix(lower, "x-signature") || strings.HasPrefix(lower, "grpc-metadata-") || strings.HasPrefix(lower, "x-gsrv-") {
 			continue
 		}
 		for _, value := range values {
@@ -173,6 +173,7 @@ func (c *Client) Do(ctx context.Context, method, path string, body []byte, heade
 	if err := auth.SignHTTP(r, c.cfg.Service, c.credential, time.Now(), rand.Text()); err != nil {
 		return nil, fault.Wrap(fault.InvalidArgument, "HTTP signing failed", err)
 	}
+	r.GetBody = nil // 不重放已签名请求，避免不确定断连后复用已消费的nonce；保留连接池。
 	response, err := c.http.Do(r)
 	if err != nil {
 		return nil, fault.Wrap(fault.Unavailable, "downstream HTTP transport failed", err)

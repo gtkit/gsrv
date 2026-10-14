@@ -11,6 +11,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/textproto"
 	"strconv"
 	"strings"
 	"time"
@@ -30,13 +31,13 @@ const (
 	SignatureVersion = "gsrv-hmac-v1"
 )
 
-// Credential 描述一个调用方的可轮换凭据；Secret/Token 至少有一项，非空时至少 32 字节。
+// Credential 描述一个调用方的可轮换凭据；Secret/Token 至少有一项，Secret至少32字节，Token为32–4096字节。
 type Credential struct {
 	_      struct{} // 强制外部使用带键字面量。
 	AppKey string   // 调用服务公开标识；必填，1–64 位安全 ASCII 字符。
 	KeyID  string   // 密钥轮换版本；必填，同 AppKey 内唯一，字符约束同 AppKey。
 	Secret string   // HTTP HMAC 密钥；非空至少 32 字节，与 Token 至少提供一项。
-	Token  string   // 公开 gRPC Bearer 凭据；非空至少 32 字节，绑定 AppKey。
+	Token  string   // 公开 gRPC Bearer 凭据；非空32–4096字节，绑定AppKey，与AuthenticateToken上限一致。
 }
 
 // Identity 是认证结果，AppKey 不从未经验证的头直接构造。
@@ -85,7 +86,7 @@ func New(cfg Config) (*Verifier, error) {
 	for _, credential := range cfg.Credentials {
 		if !ValidName(credential.AppKey) || !ValidName(credential.KeyID) ||
 			(credential.Secret == "" && credential.Token == "") ||
-			(credential.Secret != "" && len(credential.Secret) < 32) || (credential.Token != "" && len(credential.Token) < 32) {
+			(credential.Secret != "" && len(credential.Secret) < 32) || (credential.Token != "" && (len(credential.Token) < 32 || len(credential.Token) > 4096)) {
 			return nil, errors.New("auth: invalid credential identifiers or secret length")
 		}
 		key := credential.AppKey + ":" + credential.KeyID
@@ -224,12 +225,16 @@ func (v *Verifier) AuthenticateToken(ctx context.Context, appKey, token string) 
 
 // SignHTTP 为有界 HTTP 请求设置签名头；at/nonce 由调用方提供，重试必须使用新 nonce。
 // credential.Secret 不进入任何请求头。签名服务名必须与目标服务配置一致。
+// Content-Type首尾SP/HTAB按net/http发送规则裁掉后签名，避免实际报文与签名不一致。
 func SignHTTP(r *http.Request, service string, credential Credential, at time.Time, nonce string) error {
 	if r == nil || r.URL == nil || !ValidName(service) || !ValidName(credential.AppKey) || !ValidName(credential.KeyID) || !ValidName(nonce) || len(credential.Secret) < 32 || len(r.Header.Values("Content-Type")) > 1 {
 		return errors.New("auth: invalid signing inputs")
 	}
 	if r.Header == nil {
 		r.Header = make(http.Header)
+	}
+	if values := r.Header.Values("Content-Type"); len(values) == 1 {
+		r.Header.Set("Content-Type", textproto.TrimString(values[0]))
 	}
 	body, err := readBody(r, 1<<20)
 	if err != nil {

@@ -71,13 +71,14 @@ type Client struct {
 
 var _ grpc.ClientConnInterface = (*Client)(nil)
 
-// NewClient 复用静态连接并禁用gRPC重试与远端service config；不提供默认业务重试。
+// NewClient 复用静态连接并禁用策略重试与远端service config；不提供默认业务重试。
+// grpc-go仍可在RPC未发送/未被服务端处理时透明重试，沿用同一调用预算。
 func NewClient(cfg ClientConfig, credential auth.Credential, dependency *breaker.Dependency) (*Client, error) {
 	cfg, err := cfg.Normalize()
 	if err != nil {
 		return nil, err
 	}
-	if dependency == nil || !auth.ValidName(dependency.Name()) || !auth.ValidName(credential.AppKey) || len(credential.Token) < 32 {
+	if dependency == nil || !auth.ValidName(dependency.Name()) || !auth.ValidName(credential.AppKey) || len(credential.Token) < 32 || len(credential.Token) > 4096 {
 		return nil, errors.New("gRPC client: dependency and own Bearer credential required")
 	}
 	var transport credentials.TransportCredentials
@@ -121,7 +122,7 @@ func (c *Client) metadata(ctx context.Context) context.Context {
 	md = md.Copy()
 	for key := range md {
 		lower := strings.ToLower(key)
-		if lower == "authorization" || lower == "x-app-key" || lower == "x-key-id" || lower == "x-request-id" || strings.HasPrefix(lower, "x-gsrv-") || strings.HasPrefix(lower, "x-signature") {
+		if lower == "authorization" || lower == "proxy-authorization" || lower == "cookie" || lower == "x-app-key" || lower == "x-key-id" || lower == "x-request-id" || strings.HasPrefix(lower, "x-gsrv-") || strings.HasPrefix(lower, "x-signature") {
 			delete(md, key)
 		}
 	}
@@ -154,6 +155,7 @@ func (c *Client) Invoke(ctx context.Context, method string, args, reply any, opt
 }
 
 // NewStream 在整个stream生命周期占用槽位；caller必须Recv到结束或取消，预算到期自动释放。
+// 客户端流的单个成功最终响应即为结束，无需再次Recv EOF。
 // 发送侧EOF/CloseSend不代表完整调用成功，需继续Recv最终状态。
 func (c *Client) NewStream(ctx context.Context, desc *grpc.StreamDesc, method string, opts ...grpc.CallOption) (_ grpc.ClientStream, err error) {
 	if err := c.enter(); err != nil {
@@ -180,7 +182,7 @@ func (c *Client) NewStream(ctx context.Context, desc *grpc.StreamDesc, method st
 	if err != nil {
 		return nil, clientStatus(finish(clientFault(err)))
 	}
-	managed := &clientStream{ClientStream: stream, done: make(chan struct{})}
+	managed := &clientStream{ClientStream: stream, serverStreams: desc.ServerStreams, done: make(chan struct{})}
 	var once sync.Once
 	var final error
 	managed.finish = func(err error) error {
@@ -206,8 +208,9 @@ func (c *Client) NewStream(ctx context.Context, desc *grpc.StreamDesc, method st
 
 type clientStream struct {
 	grpc.ClientStream
-	done   chan struct{}
-	finish func(error) error
+	serverStreams bool
+	done          chan struct{}
+	finish        func(error) error
 }
 
 func (s *clientStream) Header() (metadata.MD, error) {
@@ -221,6 +224,9 @@ func (s *clientStream) Header() (metadata.MD, error) {
 func (s *clientStream) RecvMsg(message any) error {
 	err := s.ClientStream.RecvMsg(message)
 	if err == nil {
+		if !s.serverStreams {
+			return clientStatus(s.finish(nil))
+		}
 		return nil
 	}
 	if errors.Is(err, io.EOF) {

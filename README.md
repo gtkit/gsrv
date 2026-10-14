@@ -31,13 +31,15 @@ OCPC 及其媒体 SDK、Redis、任务队列、业务配置和测试已按要求
 
 `clients` 缺省为空，不建下游客户端。启用方式和全部字段注释见 `config/env/env.yml.example` 中的注释块：将 `clients: {}` 替换为所需下游，配置本服务访问对方的 AppKey、凭据环境变量引用和静态目标。
 
-每个下游共用一个 `Dependency`，HTTP/gRPC合计并发缺省100、整体预算缺省3s（含整个stream）、熔断缺省false。默认不排队、不执行业务重试或降级；长期stream需明确调整预算。gRPC应用/透明重试与远端service config显式关闭。HTTP客户端基于gtkit/httpc，固定origin、不跟随重定向，签名覆盖实际字节；HTTPS/gRPC TLS默认验证服务器证书，明文只允许loopback。
+每个下游共用一个 `Dependency`，HTTP/gRPC合计并发缺省100、整体预算缺省3s（含整个stream）、熔断缺省false。默认不排队、不执行业务重试或降级；长期stream需明确调整预算。gRPC策略重试与远端service config显式关闭；未发送/未处理RPC仍可能由grpc-go透明重试，沿用同一预算（[官方说明](https://pkg.go.dev/google.golang.org/grpc#WithDisableRetry)）。HTTP客户端基于gtkit/httpc，固定origin、不跟随重定向，Content-Type首尾空白按发送规则规范化后签名；不确定断连后不重放已签名请求。HTTPS/gRPC TLS默认验证服务器证书，明文只允许loopback。
 
 配置由 `platform/config` 校验，客户端由原 `runtime/module/info` 层装配，结果保留在 `Components.HTTPClients/GRPCClients`。InfoService仍只返回服务信息；实际业务模块通过runtime adapter将客户端注入自己的application port，不在业务层导入传输实现。bootstrap在入站排空后关闭客户端，错误路径也回收资源。
 
 根入口为 `NewDependency`、`NewServiceHTTPClient`、`NewServiceGRPCClient`。生成的gRPC客户端可直接使用 `ServiceGRPCClient`；HTTP `.Do(ctx, method, path, body, headers)` 接收已编码原始字节并返回状态、header、body。旧 `NewHTTPClient` 仍是基础gtkit/httpc入口，不自动签名或接入完整出站治理。
 
 出站身份始终使用本服务配置的凭据，保留request ID，不直接转发入站调用方身份。日志不记录URL、body或凭据。启用metrics后新增 `gsrv_dependency_*` 请求/错误/耗时/在途/拒绝指标，名称只在装配期注册，最多64个固定依赖。
+
+出站gRPC token须为32–4096字节。客户端流在最终成功响应后释放槽位，服务端流/双向流保持到EOF；取消、预算到期或Close即使不再Recv也会回收。上游预算耗尽保留超时错误并排除熔断样本，下游自身timeout仍计为失败。
 
 ## 本地启动
 

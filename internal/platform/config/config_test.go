@@ -89,6 +89,48 @@ func TestDownstreamConfigurationDefaultsAndValidation(t *testing.T) {
 	}
 }
 
+func TestDownstreamTokenLengthMatchesAuthenticator(t *testing.T) {
+	t.Setenv("SERVICE_APP_TOKEN", strings.Repeat("i", 32))
+	for _, size := range []int{31, 32, 4096, 4097} {
+		t.Setenv("PEER_TOKEN_SIZE", strings.Repeat("t", size))
+		path := filepath.Join(t.TempDir(), "config.yml")
+		data := "name: info\ngrpc: {}\nkeys:\n - app_key: inbound\n   key_id: primary\n   token_env: SERVICE_APP_TOKEN\nclients:\n peer:\n  app_key: self\n  token_env: PEER_TOKEN_SIZE\n  grpc: {target: '127.0.0.1:9091', plaintext: true}\n"
+		if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := Load(path)
+		valid := size >= 32 && size <= 4096
+		if (err == nil) != valid {
+			t.Fatalf("token length=%d valid=%t error=%v", size, valid, err)
+		}
+		if err != nil && strings.Contains(err.Error(), strings.Repeat("t", size)) {
+			t.Fatal("token leaked into configuration error")
+		}
+		if valid && len(cfg.Clients["peer"].Credential.Token) != size {
+			t.Fatal("credential changed during loading")
+		}
+	}
+}
+
+func TestInboundTokenLengthMatchesAuthenticator(t *testing.T) {
+	for _, size := range []int{31, 32, 4096, 4097} {
+		t.Setenv("SERVICE_APP_TOKEN", strings.Repeat("i", size))
+		path := filepath.Join(t.TempDir(), "config.yml")
+		data := "name: info\ngrpc: {}\nkeys:\n - app_key: inbound\n   key_id: primary\n   token_env: SERVICE_APP_TOKEN\n"
+		if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := Load(path)
+		valid := size >= 32 && size <= 4096
+		if (err == nil) != valid {
+			t.Fatalf("inbound token length=%d valid=%t error=%v", size, valid, err)
+		}
+		if valid && len(cfg.Credentials[0].Token) != size {
+			t.Fatal("inbound credential changed during loading")
+		}
+	}
+}
+
 func TestCommentedClientExampleLoadsAllFields(t *testing.T) {
 	t.Setenv("SERVICE_APP_SECRET", strings.Repeat("i", 32))
 	t.Setenv("SERVICE_APP_TOKEN", strings.Repeat("i", 32))

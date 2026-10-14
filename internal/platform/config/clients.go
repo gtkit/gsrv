@@ -91,8 +91,8 @@ func resolveClient(cfg gsrv.DownstreamConfig) (gsrv.DownstreamConfig, error) {
 		if err != nil {
 			return cfg, err
 		}
-		if len(token) < 32 {
-			return cfg, errors.New("clients: gRPC token must contain at least 32 bytes")
+		if len(token) < 32 || len(token) > 4096 {
+			return cfg, errors.New("clients: gRPC token must contain 32 to 4096 bytes")
 		}
 		cfg.Credential.Token = token
 	}

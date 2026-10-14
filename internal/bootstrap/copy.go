@@ -216,10 +216,13 @@ func copySocket(root, path string) string {
 func listenersConflict(left, right string) bool {
 	lh, lp, le := net.SplitHostPort(left)
 	rh, rp, re := net.SplitHostPort(right)
-	if le != nil || re != nil || lp != rp {
+	lport, lerr := strconv.Atoi(lp)
+	rport, rerr := strconv.Atoi(rp)
+	if le != nil || re != nil || lerr != nil || rerr != nil || lport != rport {
 		return false
 	}
-	return strings.EqualFold(lh, rh) || lh == "" || rh == "" || lh == "0.0.0.0" || rh == "0.0.0.0" || lh == "::" || rh == "::" || loopbackPair(lh, rh)
+	li, ri := net.ParseIP(lh), net.ParseIP(rh)
+	return strings.EqualFold(lh, rh) || li != nil && ri != nil && li.Equal(ri) || lh == "" || rh == "" || li != nil && li.IsUnspecified() || ri != nil && ri.IsUnspecified() || loopbackPair(lh, rh)
 }
 
 func loopbackPair(left, right string) bool {

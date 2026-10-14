@@ -212,6 +212,23 @@ func TestHTTPAuthentication(t *testing.T) {
 		})
 	}
 }
+
+func TestTokenConstructorAndAuthenticationUseSameBounds(t *testing.T) {
+	for _, size := range []int{31, 32, 4096, 4097} {
+		credential := credentials()
+		credential.Token = strings.Repeat("t", size)
+		v, err := auth.New(auth.Config{Service: "test", Credentials: []auth.Credential{credential}})
+		valid := size >= 32 && size <= 4096
+		if (err == nil) != valid {
+			t.Fatalf("credential token size=%d valid=%t error=%v", size, valid, err)
+		}
+		if valid {
+			if _, err := v.AuthenticateToken(t.Context(), credential.AppKey, credential.Token); err != nil {
+				t.Fatalf("accepted credential cannot authenticate: %v", err)
+			}
+		}
+	}
+}
 func TestReplayTimestampAndBodyLimit(t *testing.T) {
 	v := verifier(t)
 	r := signed(t, time.Now())

@@ -214,13 +214,13 @@ SHA256(原始 body) 的小写十六进制
 
 计算 `Base64(HMAC-SHA256(secret, canonical))`，使用常数时间比较。校验原始字节后恢复 body，后续 JSON 解码不得先于签名。默认时间容差前后 30s，允许配置正值且不超过 5m；维护系统时钟同步。缺少、重复身份头、过期、篡改、method override 和重放均拒绝。
 
-使用 `gsrv.SignHTTP(request, serviceName, credential, time.Now(), rand.Text())` 生成签名。每次重试用新 nonce；它不自动重试。按最终发往服务的 URI 签名，代理不得静默改写 path/query/content type/body。helper 限定 body 为 1MiB；大文件宜独立设计分片/对象存储直传与上传凭证，不将无限大内容读入内存。
+使用 `gsrv.SignHTTP(request, serviceName, credential, time.Now(), rand.Text())` 生成签名。每次重试用新 nonce；它不自动重试。Content-Type首尾SP/HTAB按net/http发送规则裁掉后参与签名，按最终发往服务的 URI 签名，代理不得静默改写 path/query/content type/body。helper 限定 body 为 1MiB；大文件宜独立设计分片/对象存储直传与上传凭证，不将无限大内容读入内存。
 
 默认 verifier 的 nonce_capacity=100000，nonce_capacity_per_app_key=0 按不同 HTTP AppKey 向下均分。正份额不得超过均分值，KeyID 轮换共用份额；不足以给每方至少一项时启动报错。单方满时429，其他 AppKey 仍可消费自身份额；普通存储/全局故障503，取消/超时按统一错误契约映射。只回收到期项，不驱逐有效nonce。合法签名在QPS判断前消费nonce，后续429仍保留记录防重放。
 
 只有带HTTP secret的AppKey参加分配。自定义NonceStore负责自身原子去重、有效期和等价隔离；显式注入原始NewMemoryNonceStore(capacity)只有全局容量，不自动得到默认verifier的预留策略。nil/零值MemoryNonceStore在构造时拒绝。内存不跨重启/副本共享，本轮不引入Redis。默认前后30s窗口的最长保留约61s，容量按实际签名QPS乘最大保留时间并留余量；等份隔离可能留有空闲容量。
 
-gRPC 使用绑定 AppKey 的 token 与 TLS；不对 protobuf 重新序列化后做同一 HTTP body 签名，以免出现规范化差异。token 可以按同 AppKey 多 KeyID 并行配置进行轮换；QPS 仍按 AppKey 汇总。
+gRPC 使用绑定 AppKey 的32–4096字节token与TLS；认证构造器、入出站配置与验证器采用相同长度约束。不对 protobuf 重新序列化后做同一 HTTP body 签名，以免出现规范化差异。token 可以按同 AppKey 多 KeyID 并行配置进行轮换；QPS 仍按 AppKey 汇总。
 
 ## 7. 限流、熔断与降级
 
@@ -412,7 +412,7 @@ InfoService不增加下游业务调用，不因配置clients而自动发请求�
 |---|---|
 | app_key | 本服务访问此下游的身份，必填安全标识；不转发入站AppKey |
 | key_id | HTTP签名版本，HTTP必填安全标识；仅gRPC可空 |
-| secret_env/token_env | HTTP/gRPC凭据变量名，对应协议启用必填合法环境变量引用，值至少32字节 |
+| secret_env/token_env | HTTP/gRPC凭据变量名，对应协议启用必填合法环境变量引用；secret至少32字节，token为32–4096字节，与认证器上限一致 |
 | protection.timeout | 完整调用含stream预算；0/缺省3s，必须正，不延长caller deadline；长期stream显式调大 |
 | protection.max_inflight | 此依赖HTTP/gRPC合计在途；0/缺省100，必须正；满时立即失败 |
 | protection.circuit_breaker | 缺省false；开启沿用30s窗口、至少20样本、失败比0.5、开启10s、半开1；代码可提供BreakerConfig的阈值/分类 |
@@ -427,7 +427,9 @@ InfoService不增加下游业务调用，不因配置clients而自动发请求�
 | grpc.ca_file/server_name | CA空使用系统信任，server_name空使用target host；保持服务器证书验证 |
 | grpc.max_recv_bytes/max_send_bytes | 单条消息限制，0/缺省各1MiB，必须正；单次CallOption不能放宽配置上限 |
 
-HTTP调用固定origin、不跟随重定向、不使用环境代理；每次框架调用生成新timestamp/nonce，对最终URI、Content-Type和原始body字节签名。输入headers被复制，授权、签名、私有gateway与旧request ID字段重写或剔除；使用本服务配置身份，不沿用上游调用方身份。`.Do(ctx, method, path, body, headers)`的path以/开头，可含query；body在调用期间由调用方保持不变。非2xx保留状态/header/有限body供runtime adapter翻译，同时返回安全公共错误；网络与响应读取错误不向访问日志输出URL/body/原始错误。响应体总会关闭。
+HTTP调用固定origin、不跟随重定向、不使用环境代理；每次框架调用生成新timestamp/nonce，对最终URI、规范化后的Content-Type和原始body字节签名。输入headers被复制，Authorization、Proxy-Authorization、Cookie、签名、私有gateway与旧request ID字段重写或剔除；使用本服务配置身份，不沿用上游调用方身份。`.Do(ctx, method, path, body, headers)`的path以/开头，可含query；body在调用期间由调用方保持不变。非2xx保留状态/header/有限body供runtime adapter翻译，同时返回安全公共错误；网络与响应读取错误不向访问日志输出URL/body/原始错误。响应体总会关闭。
+
+已签名请求清除GetBody，避免net/http在复用连接上遇到不确定断连时自动重发GET或带幂等键的POST，复用已消费nonce。连接池继续复用；框架不根据状态码/网络错误执行业务重试，也不自动添加幂等键。底层确认未发送/未处理时可能恢复连接，仍共用原预算；此约束不承诺网络层只有一次尝试，也不提供跨服务恰好一次执行保证。显式业务重试由runtime adapter决定，必须重新生成签名与nonce。
 
 在runtime adapter内使用已装配组件的调用片段如下（应用层仍使用自身port）：
 
@@ -446,13 +448,15 @@ if err != nil {
 // 在adapter内把result翻译为协议无关的application结果。
 ```
 
-gRPC wrapper实现ClientConnInterface，使用自己的AppKey/token与有效request ID，保留调用方其他metadata但清理已知身份/私有gateway字段。禁用应用和透明重试及resolver service config，不自动延长caller deadline。下游gRPC错误保留协议code但使用安全文案；公共治理code用于统一指标/熔断分类。unary结束即归还容量，stream保持到Recv EOF/错误、取消、预算到期或Close。CloseSend和SendMsg EOF只表示发送侧关闭，不能判完整调用成功；caller需读取最终状态或取消。watcher由客户端持有和等待退出。
+gRPC wrapper实现ClientConnInterface，使用自己的AppKey/token与有效request ID，保留调用方其他metadata但清理Authorization、Proxy-Authorization、Cookie和已知身份/私有gateway字段，输入metadata不修改。禁用策略/业务重试及resolver service config，不自动延长caller deadline。WithDisableRetry不关闭grpc-go对未发送/未处理RPC的透明重试，透明尝试共用原预算与同一并发槽位，依据[官方说明](https://pkg.go.dev/google.golang.org/grpc#WithDisableRetry)及锁定v1.83.2源码；不使用私有API伪造关闭承诺。下游gRPC错误保留协议code但使用安全文案；公共治理code用于统一指标/熔断分类。
 
-共享Dependency不默认排队或重试、不自动降级；可选熔断使用现有gobreaker/v2的TwoStep机制，在完整调用结束时报告。取消、参数、鉴权/权限错误排除；NotFound等业务拒绝不当作下游不可用。调用自身的并发/熔断拒绝不计进熔断失败样本。仍需业务降级时在runtime adapter明确使用既有allow/fallback钩子，不叠加默认重试或重复保护。
+unary结束即归还容量。客户端流（ServerStreams=false）的单个成功最终响应即结束，兼容生成客户端CloseAndRecv，不需再次Recv EOF；服务端流/双向流仍保持到Recv EOF/错误。取消、预算到期或Close即使caller不再Recv也由watcher回收，只计量/释放一次。CloseSend和SendMsg EOF只表示发送侧关闭，不能判完整调用成功；caller需读取最终状态或取消。watcher由客户端持有，Close拒绝新调用并等待在途与watcher退出。
+
+共享Dependency不默认排队或重试、不自动降级；可选熔断使用现有gobreaker/v2的TwoStep机制，在完整调用结束时报告。取消、参数、鉴权/权限错误排除；上游ctx预算耗尽也排除下游失败样本，但调用返回与指标仍保留DeadlineExceeded，下游自身timeout到期继续计为失败。WithTimeoutCause使用每次调用独立标识记录最先触发的来源，下游先超时不会因finish较晚、上游随后也到期而被误排除。上游导致调用结束时，report额外携带context.Canceled，供公共排除分类识别；自定义分类须用errors.Is识别包装错误。NotFound等业务拒绝不当作下游不可用。调用自身的并发/熔断拒绝不计进熔断失败样本。HTTP整体预算覆盖响应body读取，unary和整个stream也使用min(caller剩余预算, dependency.timeout)。仍需业务降级时在runtime adapter明确使用既有allow/fallback钩子，不叠加默认重试或重复保护。
 
 出站访问日志字段包含direction=outbound、dependency、protocol、request_id、自己的app_key、duration_ms、error_code。最小指标新增gsrv_dependency_requests_total（固定公共error_code）、errors_total、inflight、rejections_total（inflight/breaker）、duration_seconds（复用既有桶）。仅装配期注册的最多64个目标参与导出，不将URL、AppKey、request ID、body或任意错误文案作为标签；入站指标不重复计入出站。
 
-契约门禁`make proto-check`在自建临时目录生成并比较整个pb集合，覆盖缺失、额外和过期文件，不改工作区，不用Git是否干净判断生成正确性。复制门禁`make copy-check`动态读取go.mod，检查手写自身imports、proto go_package及配置.example的服务名/监听/socket；新module需替换example-service。`bash scripts/check-copy.sh /本机/另一个服务源码目录`显式比较两个示例的标识冲突，不扫描其他仓库、不读取真实配置或凭据，不保证实际目标机端口空闲。架构传感器使用当前module且保留原禁止规则。CI与make check统一执行这些入口，buf和本地插件复用现有安装，首次依赖缓存缺失可能访问Buf源。
+契约门禁`make proto-check`在自建临时目录生成并比较整个pb集合，覆盖缺失、额外和过期文件，不改工作区，不用Git是否干净判断生成正确性。复制门禁`make copy-check`动态读取go.mod，检查手写自身imports、proto go_package及配置.example的服务名/监听/socket；新module需替换example-service。`bash scripts/check-copy.sh /本机/另一个服务源码目录`显式比较两个示例的标识冲突，数值端口和等价IP字面量归一比较，不扫描其他仓库、不读取真实配置或凭据，不保证实际目标机端口空闲。架构传感器使用当前module且保留原禁止规则。CI与make check统一执行这些入口，buf和本地插件复用现有安装，首次依赖缓存缺失可能访问Buf源。
 
 本阶段实际验收（2026-10-14）：完整`GOWORK=off make check`通过，包含build、lint（0 issues）、vet、race（count=1、timeout=5m）、go fix -diff无输出、架构、临时proto/pb比较及复制检查。`make build`生成Linux amd64静态二进制。所有真实协议验证使用本机测试服务和假凭据，未连接生产或外部业务系统。
 
@@ -464,3 +468,25 @@ gRPC wrapper实现ClientConnInterface，使用自己的AppKey/token与有效requ
 - 全部原目录集合、go.mod/go.sum及原proto/pb哈希与实施前一致；无文件移动/删除/暂存变更。新文件均位于现有包和scripts目录，templates未恢复，OpenSpec保持本地忽略。
 
 调用方回审：bootstrap→runtime.Build改用Components并接入Stop/Close，grpc装配使用同一application；platform.Load解析clients与自身凭据；协议wrapper所有结束分支归还Dependency，生成客户端使用ClientConnInterface。未新增业务规则或依赖，业务重试默认关闭。本阶段未重新扫描漏洞数据库，先前扫描属于历史记录。
+
+### 13.1 出站五项复审与修复记录（2026-10-14）
+
+本次先从干净Git工作区复审，在现有包内补充失败反证再修复。没有调整目录、层级或依赖方向，没有引入业务规则、依赖或默认业务重试。
+
+| 发现 | 修复与反证 |
+|---|---|
+| Content-Type首尾空白在发送时裁掉，HMAC签名仍使用旧值；代理授权可被转发 | 签名前规范化SP/HTAB，HTTP/gRPC清理代理授权与Cookie；真实对端验签、混合大小写头/metadata、自身身份与trace/request ID保留、输入不变 |
+| 复用HTTP连接的响应前断连触发GET及带幂等键POST自动重发，重复同一nonce | 签名后清除GetBody；真实对端验签消费nonce后断连，断言只收到一次请求；正常连接复用和503/重定向边界仍通过 |
+| 客户端流的最终成功响应未立即释放槽位，生成CloseAndRecv不会继续Recv EOF | 以ServerStreams区分流类型；真实客户端流单响应即回收，双向流多次响应仍占用容量直到EOF |
+| 上游短预算错误计入下游熔断；延迟finish时可能丢失最先触发来源 | 每调用独立WithTimeoutCause区分来源；synctest覆盖上游短预算、自身短预算、两个deadline先后到期及嵌套Dependency；返回/指标仍保留DeadlineExceeded |
+| token构造/配置只检查最小长度，与认证器4096字节上限不一致 | 入出站配置、认证构造器与客户端统一32–4096；31/32/4096/4097边界与合法token实际认证验证 |
+| 文档错误宣称关闭gRPC透明重试 | 按官方说明和锁定源码校正：策略/业务重试及远端service config关闭，未发送/未处理RPC的透明尝试仍共用原预算/容量 |
+| 复制检查对端口/IP做文本比较，等价文本漏报冲突 | 数值端口与net.IP.Equal比较；前导零端口、压缩IPv6、IPv4映射IPv6、通配符与socket冲突回归 |
+
+额外真实协议验证覆盖：停止Recv后主动取消、caller/dependency预算到期与16个并发Close均自动回收，跨协议容量可重新使用且结束指标只计一次；HTTP响应头已返回但body阻塞仍受总预算限制；真实unary短预算仍只进入handler一次。既有健康、nonce份额隔离、公开gRPC准入与gateway回归全部保持。
+
+最终`GOWORK=off make check`通过：build、golangci-lint（0 issues）、vet、全仓race（count=1、timeout=5m）、现代语法、架构、proto/pb临时比较和整仓复制检查。Linux amd64静态`make build`通过，`go mod verify`为all modules verified；`govulncheck`扫描最终调用图为0项可达漏洞，仍有既有cel-go v0.28.0的[GO-2026-6094](https://pkg.go.dev/vuln/GO-2026-6094)导入包提示，当前未调用NativeTypes/ParseStructTag。本次未升级锁定依赖。
+
+配置逐项核对覆盖clients启用/关闭、默认100/3s/熔断false、TLS与body/message限制、token长度及未知retry拒绝；完整注释示例实际加载通过。Makefile和GitLab CI既有统一入口已自动包含新增反证测试，无需新增检查入口。application与实际proto/pb契约保持原行为。
+
+调用方回审：SignHTTP的根封装与HTTP wrapper均按规范化后的实际报文签名；wrapper复制输入后清理身份字段；runtime/配置错误路径和bootstrap关闭继续回收原Components。Dependency重复finish、流watcher和Close共享终态保护；业务层仍只通过原port调用。原应用目录集合、go.mod/go.sum和proto/pb哈希不变，Git仅修改现有文件，无删除、移动或暂存操作；OpenSpec保持本地忽略。

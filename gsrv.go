@@ -259,7 +259,8 @@ func NewServiceHTTPClient(cfg ServiceHTTPConfig, credential Credential, dependen
 	return httptransport.NewClient(cfg, credential, dependency)
 }
 
-// NewServiceGRPCClient 可直接传给proto生成客户端；TLS缺省开启，重试关闭。
+// NewServiceGRPCClient 可直接传给proto生成客户端；TLS缺省开启，策略/业务重试关闭。
+// grpc-go未发送/未处理RPC的透明重试仍受原调用预算约束。
 func NewServiceGRPCClient(cfg ServiceGRPCConfig, credential Credential, dependency *Dependency) (*ServiceGRPCClient, error) {
 	return grpctransport.NewClient(cfg, credential, dependency)
 }
@@ -269,7 +270,7 @@ type DownstreamConfig struct {
 	AppKey     string             `yaml:"app_key"`    // 本服务访问该下游的身份；必填，1–64位安全ASCII，不转发入站调用方身份。
 	KeyID      string             `yaml:"key_id"`     // HTTP签名密钥版本；HTTP启用必填，安全标识；仅gRPC时可空。
 	SecretEnv  string             `yaml:"secret_env"` // HTTP HMAC密钥变量名；HTTP启用必填，环境值>=32字节，不保存明文。
-	TokenEnv   string             `yaml:"token_env"`  // gRPC Bearer变量名；gRPC启用必填，环境值>=32字节，不保存明文。
+	TokenEnv   string             `yaml:"token_env"`  // gRPC Bearer变量名；gRPC启用必填，环境值32–4096字节，与认证器上限一致，不保存明文。
 	Protection DependencyConfig   `yaml:"protection"` // 合计并发与整体预算；缺省100/3s，熔断false，不配置业务重试。
 	HTTP       *ServiceHTTPConfig `yaml:"http"`       // 缺失关闭该依赖HTTP；至少启用HTTP/gRPC之一。
 	GRPC       *ServiceGRPCConfig `yaml:"grpc"`       // 缺失关闭该依赖gRPC；固定target，TLS默认开启。
