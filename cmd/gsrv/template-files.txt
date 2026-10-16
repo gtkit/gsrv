@@ -1,0 +1,16 @@
+.gitignore
+.gitlab-ci.yml
+README.md
+GSRV_DESIGN.md
+Makefile
+go.mod
+go.sum
+gsrv.go
+buf.yaml
+buf.gen.yaml
+buf.lock
+config/env/env.yml.example
+cmd/server/
+internal/
+proto/
+scripts/

@@ -68,6 +68,19 @@ func TestCopyCheckModuleAndConflictsWithoutCredentials(t *testing.T) {
 	}
 }
 
+func TestCopyCheckOwnModuleUnderSkeletonPath(t *testing.T) {
+	root := copyFixture(t, "github.com/gtkit/gsrv/order-service", "order-service", 8080)
+	if err := CheckCopy(root, ""); err != nil {
+		t.Fatalf("valid nested self-module rejected: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "cmd/server/main.go"), []byte("package main\nimport \"github.com/gtkit/gsrv\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckCopy(root, ""); err == nil {
+		t.Fatal("legacy skeleton import accepted in nested module")
+	}
+}
+
 func TestCopyCheckWildcardAndSocketConflicts(t *testing.T) {
 	for _, tc := range []struct {
 		left, right string

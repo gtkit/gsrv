@@ -1,6 +1,6 @@
 # gsrv
 
-基于 Go 1.27 与现有 gtkit 依赖的最小 HTTP/gRPC 服务骨架，当前模块路径为 `github.com/gtkit/gsrv`。创建新服务时复制整个项目源码，在新仓库内维护公共实现与业务；根包只负责通用能力的装配，业务继续采用当前项目的模块分层。
+基于 Go 1.27 与现有 gtkit 依赖的最小 HTTP/gRPC 服务骨架，当前模块路径为 `github.com/gtkit/gsrv`。创建新服务时使用生成器或复制项目源码，在新仓库内维护公共实现与业务；根包只负责通用能力的装配，业务继续采用当前项目的模块分层。
 
 [架构、请求时序、装配、生命周期、整仓复制与实施方案](GSRV_DESIGN.md)
 
@@ -17,9 +17,37 @@ proto/info/v1 → pb/info/v1      唯一契约源及 buf 生成产物
 
 OCPC 及其媒体 SDK、Redis、任务队列、业务配置和测试已按要求移除。`info` 模块只返回服务名和请求 ID，无业务规则，也不依赖数据库或 Redis。目录层级与依赖方向沿用原项目；未经明确授权不得调整。
 
-## 复制项目创建新服务
+## 安装生成器创建新服务
 
-1. 将项目源码复制到新目录，建立独立 Git 仓库；不要复制 `.git`、`bin`、`run`、`logs`、真实配置、凭据和证书私钥。
+```sh
+go install github.com/gtkit/gsrv/cmd/gsrv@latest
+gsrv new order-service --module github.com/your-org/order-service
+```
+
+`go install` 安装生成器，`gsrv new` 在当前目录下创建 `order-service/`。项目名决定目录和配置示例中的服务名，支持 1–64 位小写 ASCII 字母、数字与连字符，必须以字母开头、以字母或数字结尾。`--module` 必填且没有默认值，用于新项目的 Go module、自模块 imports 和 proto `go_package`。目标目录、文件或软链接已存在时拒绝生成，不覆盖。也可使用 `gsrv new --module github.com/your-org/order-service order-service`。
+
+运行环境需要 Go 1.27.2 或更新的 1.27 补丁版、make、buf，以及 `buf.gen.yaml` 中的四个本地插件：`protoc-gen-go`、`protoc-gen-go-grpc`、`protoc-gen-grpc-gateway`、`protoc-gen-openapiv2`，均须在 PATH 中。CLI 会先检查这些工具；缺少时只提示，不安装工具或启动容器。Go 安装目录（通常为 `$(go env GOPATH)/bin`，或显式设置的 GOBIN）也须在 PATH 中。
+
+生成器内嵌随工具发布的骨架快照，保留当前服务目录、源码、测试、脚本、CI 配置和配置示例；不复制生成器自身、Git 历史、真实配置、凭据、日志、构建产物与本地 agent 元数据。它只改 Go imports 中的自模块路径，保留复制检查器的旧骨架识别常量，然后在新目录执行 `GOWORK=off make gen` 和 `GOWORK=off go mod tidy`；pb 全部重新生成，不手改。生成步骤共用 5 分钟预算；首次缺少 Buf 或 Go 依赖缓存时仍需要网络。
+
+成功后在 `.gsrv-origin.json` 记录源 module、生成器版本、可用的构建 revision 和模板 SHA-256。`gsrv version` 可查看这些工具信息，版本来自 Go 构建信息；本地未提交构建可能带 `+dirty`，没有版本信息时显示 `(devel)`。需要重现时使用明确版本安装。生成过程中失败会返回非零状态，指出失败步骤和已创建目录，保留该目录供检查；重试前请自行处理该目录。
+
+```sh
+cd order-service
+cp config/env/env.yml.example config/env/env.yml
+# 在进程环境中设置 SERVICE_APP_SECRET、SERVICE_APP_TOKEN，各至少 32 字节。
+GOWORK=off make run
+```
+
+生成后的服务名已经写入 `.example`。同机启动多个服务前仍需调整 HTTP/gRPC 端口和 socket 路径，并同步真实配置与 `.example`；调用方 HTTP 签名目标必须使用该服务名。`gsrv help` 查看命令说明。
+
+维护本仓库时，修改骨架源码、脚本或文档后执行 `make template` 刷新 `cmd/gsrv/template.zip`。`make template-check` 只比较，不改文件；`make check` 会检查快照与 `cmd/gsrv/template-files.txt` 白名单内的文件内容及集合一致。`make build-cli` 构建本机生成器到 `bin/gsrv`。生成的服务项目不携带生成器维护命令。
+
+如需固定本次发布版本，使用 `go install github.com/gtkit/gsrv/cmd/gsrv@v1.0.1`。本地开发可用 `GOBIN=/绝对路径/临时目录 GOWORK=off go install ./cmd/gsrv` 验证安装，不覆盖已安装的工具。
+
+## 手工复制项目创建新服务
+
+1. 将服务源码复制到新目录，建立独立 Git 仓库；不要复制 `.git`、`bin`、`run`、`logs`、真实配置、凭据和证书私钥。手工复制完整仓库时，`cmd/gsrv` 中的生成器只用于维护原骨架，其内嵌快照仍指向原骨架；新服务无需携带该目录及 Makefile 的 `gsrv:generator` 维护块。
 2. 修改 `go.mod` 的 module 为新服务实际路径，同步修改 `cmd`、`internal`、`gsrv.go` 中的自模块 imports（包括测试）和 proto `go_package`。架构脚本自动读取当前 module，无需手工改规则；保留既有 gtkit 依赖，不替换检查器中的旧骨架识别常量。
 3. 执行 `GOWORK=off make gen` 重新生成 `pb`，再执行 `GOWORK=off go mod tidy`；禁止直接修改生成产物。
 4. 在 `.example` 和真实配置同步修改服务名、监听端口、socket 路径及调用方凭据引用。改名副本须替换 `example-service`。`name` 必须与调用方 HTTP 签名目标一致；同机部署须避免端口/socket 冲突。

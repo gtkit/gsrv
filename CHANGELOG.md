@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-10-16
+
+### Added
+
+- 提供可通过 `go install github.com/gtkit/gsrv/cmd/gsrv@latest` 安装的项目生成器，支持指定项目名和 Go module，生成完整 HTTP/gRPC 服务并保持现有目录与分层。
+- 生成时同步自模块 imports、proto `go_package` 和配置示例服务名，并通过现有工具链重新生成 pb；保留源码、测试、脚本和 CI 配置。
+- 拒绝覆盖已有目标，排除真实配置、凭据、Git 历史与本地产物，记录骨架版本和模板指纹，并提供模板一致性检查。
+
+### Fixed
+
+- 修复新 module 位于原骨架 module 子路径下时被复制检查误拒绝的问题，继续拦截真正的旧骨架引用。
+
+## [1.0.0] - 2026-10-14
+
 ### Fixed
 
 - 修复HTTP Content-Type首尾空白的真实签名不一致，清理代理授权，阻止不确定断连后重放已签名请求。

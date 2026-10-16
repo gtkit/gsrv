@@ -89,7 +89,8 @@ func inspectCopy(root string) (copyIdentity, error) {
 				return err
 			}
 			foreignInternal := strings.Contains(importPath, "/internal/") && !strings.HasPrefix(importPath, module+"/internal/")
-			legacy := module != "github.com/gtkit/gsrv" && (importPath == "github.com/gtkit/gsrv" || strings.HasPrefix(importPath, "github.com/gtkit/gsrv/"))
+			ownImport := importPath == module || strings.HasPrefix(importPath, module+"/")
+			legacy := module != "github.com/gtkit/gsrv" && !ownImport && (importPath == "github.com/gtkit/gsrv" || strings.HasPrefix(importPath, "github.com/gtkit/gsrv/"))
 			if foreignInternal || legacy {
 				problems = append(problems, fmt.Errorf("copy check: stale own import at %s:%d", path, fset.Position(item.Pos()).Line))
 			}

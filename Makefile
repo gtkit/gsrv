@@ -22,3 +22,14 @@ check-local:
 	bash scripts/check-modern.sh
 	bash scripts/check-architecture.sh
 	$(MAKE) proto-check copy-check
+
+# gsrv:generator:start
+.PHONY: template template-check build-cli
+template:
+	go generate ./cmd/gsrv
+template-check:
+	go test ./cmd/gsrv -run '^TestTemplateSnapshot$$' -count=1
+build-cli:
+	go build -trimpath -o bin/gsrv ./cmd/gsrv
+check-local: template-check
+# gsrv:generator:end
